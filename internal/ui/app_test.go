@@ -133,3 +133,32 @@ func TestLoadEditorInitialPrefersRecoveryDraft(t *testing.T) {
 		t.Fatalf("unexpected recovery status: %q", status)
 	}
 }
+
+func TestVersionCommandPrintsCurrentVersion(t *testing.T) {
+	app, err := NewApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+
+	out := &bytes.Buffer{}
+	app.out = out
+	if err := app.Run(context.Background(), []string{"version"}); err != nil {
+		t.Fatalf("run version: %v", err)
+	}
+	if !strings.Contains(out.String(), "pb ") {
+		t.Fatalf("unexpected version output: %q", out.String())
+	}
+}
+
+func TestApplyUpgradePolicyRejectsUnknownValues(t *testing.T) {
+	cfg := &model.Config{}
+	if err := applyUpgradePolicy(cfg, "weird"); err == nil {
+		t.Fatalf("expected invalid policy to fail")
+	}
+	if err := applyUpgradePolicy(cfg, model.UpgradePolicyAuto); err != nil {
+		t.Fatalf("apply valid policy: %v", err)
+	}
+	if cfg.UpgradePolicy != model.UpgradePolicyAuto {
+		t.Fatalf("unexpected policy: %q", cfg.UpgradePolicy)
+	}
+}

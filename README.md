@@ -10,6 +10,7 @@ It stores plaintext files in a dedicated private GitHub repository, keeps a loca
 - built-in terminal editor with local draft autosave
 - explicit `sync` flow for reconciling changes across devices
 - durable per-file version history with show and restore commands
+- built-in release checks with saved upgrade preferences
 - conflict copies instead of risky remote overwrites
 - installable without sudo or admin rights
 
@@ -61,6 +62,7 @@ Then run the same checks locally that CI uses:
 
 ```bash
 ./pb init
+./pb version
 ./pb new notes/today.txt
 ./pb versions notes/today.txt
 ./pb list
@@ -73,6 +75,7 @@ Then run the same checks locally that CI uses:
 
 ```text
 pb init
+pb version
 pb new <path>
 pb edit <path>
 pb read <path>
@@ -83,6 +86,7 @@ pb delete <path> [--yes]
 pb list [prefix] [--refresh]
 pb sync
 pb status
+pb upgrade [--yes] [--check] [--policy prompt|auto|manual]
 pb logout
 ```
 
@@ -90,6 +94,15 @@ Global flags:
 
 - `--repo <name>`: override the default GitHub storage repo
 - `--json`: emit JSON for `read`, `list`, and `status`
+
+## Release Updates
+
+- `pb` checks GitHub for a newer release about once a day after you have run `pb init`
+- when an update is available, you can upgrade now, always auto-upgrade, skip that release, or turn prompts off
+- `pb upgrade --check` checks whether a newer release exists
+- `pb upgrade --yes` installs the latest published release immediately
+- `pb upgrade --policy auto|prompt|manual` saves your upgrade preference
+- `pb version` prints the currently running CLI version
 
 ## Version History
 

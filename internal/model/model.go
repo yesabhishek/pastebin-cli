@@ -4,8 +4,14 @@ import "time"
 
 const (
 	StateVersion  = 1
-	ConfigVersion = 1
+	ConfigVersion = 2
 	IndexVersion  = 1
+)
+
+const (
+	UpgradePolicyPrompt = "prompt"
+	UpgradePolicyAuto   = "auto"
+	UpgradePolicyManual = "manual"
 )
 
 const (
@@ -16,11 +22,14 @@ const (
 )
 
 type Config struct {
-	Version  int    `json:"version"`
-	Owner    string `json:"owner"`
-	Repo     string `json:"repo"`
-	Login    string `json:"login"`
-	DeviceID string `json:"device_id"`
+	Version          int       `json:"version"`
+	Owner            string    `json:"owner"`
+	Repo             string    `json:"repo"`
+	Login            string    `json:"login"`
+	DeviceID         string    `json:"device_id"`
+	UpgradePolicy    string    `json:"upgrade_policy,omitempty"`
+	IgnoredRelease   string    `json:"ignored_release,omitempty"`
+	LastReleaseCheck time.Time `json:"last_release_check,omitempty"`
 }
 
 type TrackedFile struct {

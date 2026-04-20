@@ -66,6 +66,9 @@ func Load(paths Paths) (*model.Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, errs.Wrap(errs.CodeLocalCorruption, "parse config", err)
 	}
+	if cfg.UpgradePolicy == "" {
+		cfg.UpgradePolicy = model.UpgradePolicyPrompt
+	}
 	return &cfg, nil
 }
 
