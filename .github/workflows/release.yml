@@ -1,5 +1,8 @@
 name: release
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 permissions:
   contents: write
 
@@ -34,8 +37,8 @@ jobs:
             archive: zip
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Build binary
@@ -57,7 +60,7 @@ jobs:
             tar -czf "pb_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz" pb
           fi
       - name: Upload release artifact
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.tar.gz

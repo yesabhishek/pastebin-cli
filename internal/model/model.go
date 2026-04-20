@@ -45,6 +45,7 @@ type State struct {
 type JournalEntry struct {
 	Path      string    `json:"path"`
 	Operation string    `json:"operation"`
+	Reason    string    `json:"reason,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 	Attempts  int       `json:"attempts"`
 	Error     string    `json:"error,omitempty"`
@@ -73,6 +74,14 @@ type SaveOutcome struct {
 	ConflictPath string
 	RemoteSaved  bool
 	Message      string
+}
+
+type VersionEntry struct {
+	ID        string    `json:"id"`
+	CommitSHA string    `json:"commit_sha"`
+	Path      string    `json:"path"`
+	Timestamp time.Time `json:"timestamp"`
+	Reason    string    `json:"reason"`
 }
 
 type SyncResult struct {

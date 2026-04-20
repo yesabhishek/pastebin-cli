@@ -102,3 +102,38 @@ func TestSaveAndLoadStateAndJournal(t *testing.T) {
 		t.Fatalf("unexpected content: %q", string(content))
 	}
 }
+
+func TestSaveAndLoadRecovery(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	paths := config.Paths{
+		RootDir:     root,
+		ConfigPath:  filepath.Join(root, "config.json"),
+		StatePath:   filepath.Join(root, "state", "index.json"),
+		JournalPath: filepath.Join(root, "state", "journal.json"),
+		CacheDir:    filepath.Join(root, "cache"),
+		RecoveryDir: filepath.Join(root, "recovery"),
+	}
+	if err := config.EnsureLayout(paths); err != nil {
+		t.Fatalf("ensure layout: %v", err)
+	}
+	manager := New(paths)
+
+	if err := manager.SaveRecovery("device1", "notes/draft.txt", []byte("draft body")); err != nil {
+		t.Fatalf("save recovery: %v", err)
+	}
+	data, err := manager.LoadRecovery("device1", "notes/draft.txt")
+	if err != nil {
+		t.Fatalf("load recovery: %v", err)
+	}
+	if string(data) != "draft body" {
+		t.Fatalf("unexpected recovery content: %q", string(data))
+	}
+	if err := manager.RemoveRecovery("device1", "notes/draft.txt"); err != nil {
+		t.Fatalf("remove recovery: %v", err)
+	}
+	if _, err := manager.LoadRecovery("device1", "notes/draft.txt"); err == nil {
+		t.Fatalf("expected removed recovery to be missing")
+	}
+}

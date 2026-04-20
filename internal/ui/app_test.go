@@ -44,6 +44,9 @@ func TestListCommandPrintsTrackedFiles(t *testing.T) {
 	if err := cacheMgr.SaveState(state); err != nil {
 		t.Fatalf("save state: %v", err)
 	}
+	if err := cacheMgr.SaveRecovery("device1", "notes/draft.txt", []byte("draft")); err != nil {
+		t.Fatalf("save recovery: %v", err)
+	}
 
 	out := &bytes.Buffer{}
 	errOut := &bytes.Buffer{}
@@ -59,6 +62,9 @@ func TestListCommandPrintsTrackedFiles(t *testing.T) {
 	}
 	if strings.Contains(got, "trash.txt") {
 		t.Fatalf("did not expect deleted file in list output")
+	}
+	if strings.Contains(got, "notes/draft.txt") {
+		t.Fatalf("did not expect recovery draft in list output")
 	}
 }
 
@@ -89,5 +95,41 @@ func TestLogoutRemovesLocalConfig(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Local pb state removed") {
 		t.Fatalf("unexpected logout output: %q", out.String())
+	}
+}
+
+func TestLoadEditorInitialPrefersRecoveryDraft(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("HOME", configHome)
+
+	app, err := NewApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+
+	cacheMgr := cache.New(app.paths)
+	if err := cacheMgr.SaveRecovery("device1", "notes/draft.txt", []byte("draft body")); err != nil {
+		t.Fatalf("save recovery: %v", err)
+	}
+
+	cfg := &model.Config{
+		Owner:    "tester",
+		Repo:     "pb-store",
+		Login:    "tester",
+		DeviceID: "device1",
+	}
+	initial, recovered, status, err := app.loadEditorInitial(context.Background(), nil, cacheMgr, cfg.DeviceID, "notes/draft.txt", true)
+	if err != nil {
+		t.Fatalf("load editor initial: %v", err)
+	}
+	if string(initial) != "draft body" {
+		t.Fatalf("unexpected initial content: %q", string(initial))
+	}
+	if !recovered {
+		t.Fatalf("expected recovery draft to be loaded")
+	}
+	if !strings.Contains(status, "Recovered local draft autosave") {
+		t.Fatalf("unexpected recovery status: %q", status)
 	}
 }

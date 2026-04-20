@@ -56,6 +56,62 @@ func (s *Service) SaveContent(ctx context.Context, filePath string, content []by
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.saveContentLocked(ctx, filePath, content, "save")
+}
+
+func (s *Service) ListVersions(ctx context.Context, filePath string) ([]model.VersionEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := cache.ValidatePath(filePath); err != nil {
+		return nil, err
+	}
+	versions, err := s.store.ListVersions(ctx, filePath)
+	if err != nil {
+		return nil, err
+	}
+	if len(versions) == 0 {
+		return nil, errs.Wrap(errs.CodeNotFound, "no durable versions found for "+filePath, nil)
+	}
+	return versions, nil
+}
+
+func (s *Service) ShowVersion(ctx context.Context, filePath string, versionID string) (*model.VersionEntry, []byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, err := s.resolveVersionLocked(ctx, filePath, versionID)
+	if err != nil {
+		return nil, nil, err
+	}
+	content, err := s.store.FetchFileAtRevision(ctx, filePath, entry.CommitSHA)
+	if err != nil {
+		return nil, nil, err
+	}
+	return entry, content, nil
+}
+
+func (s *Service) RestoreVersion(ctx context.Context, filePath string, versionID string) (*model.VersionEntry, *model.SaveOutcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, err := s.resolveVersionLocked(ctx, filePath, versionID)
+	if err != nil {
+		return nil, nil, err
+	}
+	content, err := s.store.FetchFileAtRevision(ctx, filePath, entry.CommitSHA)
+	if err != nil {
+		return nil, nil, err
+	}
+	outcome, err := s.saveContentLocked(ctx, filePath, content, "restore")
+	if err != nil {
+		return nil, nil, err
+	}
+	return entry, outcome, nil
+}
+
+func (s *Service) saveContentLocked(ctx context.Context, filePath string, content []byte, reason string) (*model.SaveOutcome, error) {
+
 	if err := cache.ValidatePath(filePath); err != nil {
 		return nil, err
 	}
@@ -85,6 +141,7 @@ func (s *Service) SaveContent(ctx context.Context, filePath string, content []by
 	if err := s.cache.UpsertJournalEntry(&model.JournalEntry{
 		Path:      filePath,
 		Operation: model.PendingUpsert,
+		Reason:    reason,
 		Timestamp: time.Now().UTC(),
 	}); err != nil {
 		return nil, err
@@ -94,7 +151,7 @@ func (s *Service) SaveContent(ctx context.Context, filePath string, content []by
 	if err != nil {
 		return &model.SaveOutcome{Path: filePath, Message: "saved locally; remote sync pending"}, nil
 	}
-	outcome, err := s.applyUpsert(ctx, state, snapshot, tracked, filePath, content)
+	outcome, err := s.applyUpsert(ctx, state, snapshot, tracked, filePath, content, reason)
 	if err != nil {
 		tracked.LastError = err.Error()
 		_ = s.cache.SaveState(state)
@@ -167,6 +224,7 @@ func (s *Service) DeletePath(ctx context.Context, filePath string) error {
 	return s.cache.UpsertJournalEntry(&model.JournalEntry{
 		Path:      filePath,
 		Operation: model.PendingDelete,
+		Reason:    "delete",
 		Timestamp: time.Now().UTC(),
 	})
 }
@@ -231,6 +289,10 @@ func (s *Service) Sync(ctx context.Context) (*model.SyncResult, error) {
 	defer s.mu.Unlock()
 
 	state, err := s.cache.LoadState()
+	if err != nil {
+		return nil, err
+	}
+	journal, err := s.cache.LoadJournal()
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +365,8 @@ func (s *Service) Sync(ctx context.Context) (*model.SyncResult, error) {
 				result.Conflicts = append(result.Conflicts, filePath)
 				continue
 			}
-			if err := s.store.DeleteFile(ctx, filePath, remoteRevision); err != nil && !errs.IsCode(err, errs.CodeNotFound) {
+			reason := journalReason(journal, filePath, "delete")
+			if err := s.store.DeleteFile(ctx, filePath, remoteRevision, reason); err != nil && !errs.IsCode(err, errs.CodeNotFound) {
 				local.LastError = err.Error()
 				continue
 			}
@@ -325,8 +388,9 @@ func (s *Service) Sync(ctx context.Context) (*model.SyncResult, error) {
 			local.LastError = err.Error()
 			continue
 		}
+		reason := journalReason(journal, filePath, "sync")
 		if !seen[filePath] && local.BaseRevision == "" {
-			remote, err := s.store.UpsertFile(ctx, filePath, content, "")
+			remote, err := s.store.UpsertFile(ctx, filePath, content, "", reason)
 			if err != nil {
 				local.LastError = err.Error()
 				continue
@@ -346,7 +410,7 @@ func (s *Service) Sync(ctx context.Context) (*model.SyncResult, error) {
 			result.Conflicts = append(result.Conflicts, conflictPath)
 			continue
 		}
-		remoteRecord, err := s.store.UpsertFile(ctx, filePath, content, local.BaseRevision)
+		remoteRecord, err := s.store.UpsertFile(ctx, filePath, content, local.BaseRevision, reason)
 		if err != nil {
 			local.LastError = err.Error()
 			continue
@@ -366,7 +430,7 @@ func (s *Service) Sync(ctx context.Context) (*model.SyncResult, error) {
 	return result, nil
 }
 
-func (s *Service) applyUpsert(ctx context.Context, state *model.State, snapshot *store.RemoteSnapshot, tracked *model.TrackedFile, filePath string, content []byte) (*model.SaveOutcome, error) {
+func (s *Service) applyUpsert(ctx context.Context, state *model.State, snapshot *store.RemoteSnapshot, tracked *model.TrackedFile, filePath string, content []byte, reason string) (*model.SaveOutcome, error) {
 	remoteRecord := snapshot.Index.Files[filePath]
 	if remoteRecord != nil && tracked.BaseRevision != "" && remoteRecord.Revision != tracked.BaseRevision {
 		conflictPath, err := s.createConflictCopy(state, filePath)
@@ -385,7 +449,7 @@ func (s *Service) applyUpsert(ctx context.Context, state *model.State, snapshot 
 			Message:      "remote changed; saving future edits to conflict copy",
 		}, nil
 	}
-	record, err := s.store.UpsertFile(ctx, filePath, content, tracked.BaseRevision)
+	record, err := s.store.UpsertFile(ctx, filePath, content, tracked.BaseRevision, reason)
 	if err != nil {
 		return nil, err
 	}
@@ -434,6 +498,7 @@ func (s *Service) createConflictCopy(state *model.State, originalPath string) (s
 	if err := s.cache.UpsertJournalEntry(&model.JournalEntry{
 		Path:      conflictPath,
 		Operation: model.PendingUpsert,
+		Reason:    "sync",
 		Timestamp: time.Now().UTC(),
 	}); err != nil {
 		return "", err
@@ -461,4 +526,52 @@ func (s *Service) markSynced(tracked *model.TrackedFile, remote *model.RemoteFil
 	tracked.UpdatedAt = remote.UpdatedAt
 	tracked.ConflictPath = ""
 	tracked.LastError = ""
+}
+
+func (s *Service) resolveVersionLocked(ctx context.Context, filePath string, versionID string) (*model.VersionEntry, error) {
+	if err := cache.ValidatePath(filePath); err != nil {
+		return nil, err
+	}
+	versions, err := s.store.ListVersions(ctx, filePath)
+	if err != nil {
+		return nil, err
+	}
+	if len(versions) == 0 {
+		return nil, errs.Wrap(errs.CodeNotFound, "no durable versions found for "+filePath, nil)
+	}
+	var exact *model.VersionEntry
+	matches := make([]model.VersionEntry, 0, 2)
+	for _, version := range versions {
+		if version.ID == versionID || version.CommitSHA == versionID {
+			v := version
+			exact = &v
+			break
+		}
+		if strings.HasPrefix(version.CommitSHA, versionID) || strings.HasPrefix(version.ID, versionID) {
+			matches = append(matches, version)
+		}
+	}
+	if exact != nil {
+		return exact, nil
+	}
+	switch len(matches) {
+	case 0:
+		return nil, errs.Wrap(errs.CodeNotFound, "version "+versionID+" not found for "+filePath, nil)
+	case 1:
+		v := matches[0]
+		return &v, nil
+	default:
+		return nil, errs.Wrap(errs.CodeUsage, "version "+versionID+" is ambiguous for "+filePath, nil)
+	}
+}
+
+func journalReason(journal *model.Journal, path string, fallback string) string {
+	if journal == nil || journal.Entries == nil {
+		return fallback
+	}
+	entry := journal.Entries[path]
+	if entry == nil || entry.Reason == "" {
+		return fallback
+	}
+	return entry.Reason
 }

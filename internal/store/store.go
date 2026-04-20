@@ -23,8 +23,10 @@ type RemoteStore interface {
 	EnsureRepo(context.Context) error
 	FetchIndex(context.Context) (*RemoteSnapshot, error)
 	FetchFile(context.Context, string) ([]byte, string, error)
-	UpsertFile(context.Context, string, []byte, string) (*model.RemoteFile, error)
-	DeleteFile(context.Context, string, string) error
+	FetchFileAtRevision(context.Context, string, string) ([]byte, error)
+	ListVersions(context.Context, string) ([]model.VersionEntry, error)
+	UpsertFile(context.Context, string, []byte, string, string) (*model.RemoteFile, error)
+	DeleteFile(context.Context, string, string, string) error
 	SaveIndex(context.Context, *model.RemoteIndex, string) (string, error)
 }
 
@@ -98,10 +100,77 @@ func (s *GitHubStore) FetchFile(ctx context.Context, path string) ([]byte, strin
 	return data, payload.SHA, nil
 }
 
-func (s *GitHubStore) UpsertFile(ctx context.Context, path string, content []byte, previousSHA string) (*model.RemoteFile, error) {
+func (s *GitHubStore) FetchFileAtRevision(ctx context.Context, path string, revision string) ([]byte, error) {
+	out, err := s.gh(ctx, "api", s.contentsEndpointWithRef("files/"+path, revision))
+	if err != nil {
+		return nil, err
+	}
+	var payload contentResponse
+	if err := json.Unmarshal(out, &payload); err != nil {
+		return nil, errs.Wrap(errs.CodeRemoteCorruption, "parse historical file", err)
+	}
+	data, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(payload.Content, "\n", ""))
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeRemoteCorruption, "decode historical file", err)
+	}
+	return data, nil
+}
+
+func (s *GitHubStore) ListVersions(ctx context.Context, path string) ([]model.VersionEntry, error) {
+	endpoint := fmt.Sprintf("repos/%s/%s/commits?path=%s&per_page=100",
+		s.owner,
+		s.repo,
+		url.QueryEscape("files/"+path),
+	)
+	out, err := s.gh(ctx, "api", "--paginate", "--slurp", endpoint)
+	if err != nil {
+		return nil, err
+	}
+	var payload [][]struct {
+		SHA    string `json:"sha"`
+		Commit struct {
+			Message string `json:"message"`
+			Author  struct {
+				Date time.Time `json:"date"`
+			} `json:"author"`
+			Committer struct {
+				Date time.Time `json:"date"`
+			} `json:"committer"`
+		} `json:"commit"`
+	}
+	if err := json.Unmarshal(out, &payload); err != nil {
+		return nil, errs.Wrap(errs.CodeRemoteCorruption, "parse file version history", err)
+	}
+	total := 0
+	for _, page := range payload {
+		total += len(page)
+	}
+	versions := make([]model.VersionEntry, 0, total)
+	for _, page := range payload {
+		for _, item := range page {
+			if item.SHA == "" {
+				continue
+			}
+			timestamp := item.Commit.Author.Date
+			if timestamp.IsZero() {
+				timestamp = item.Commit.Committer.Date
+			}
+			versions = append(versions, model.VersionEntry{
+				ID:        shortVersionID(item.SHA),
+				CommitSHA: item.SHA,
+				Path:      path,
+				Timestamp: timestamp,
+				Reason:    parseReason(item.Commit.Message),
+			})
+		}
+	}
+	return versions, nil
+}
+
+func (s *GitHubStore) UpsertFile(ctx context.Context, path string, content []byte, previousSHA string, reason string) (*model.RemoteFile, error) {
 	b64 := base64.StdEncoding.EncodeToString(content)
 	args := []string{"api", "--method", "PUT", s.contentsEndpoint("files/" + path),
-		"-f", "message=pb: save " + path,
+		"-f", "message=pb: " + reason + " " + path,
 		"-f", "content=" + b64,
 	}
 	if previousSHA != "" {
@@ -129,12 +198,12 @@ func (s *GitHubStore) UpsertFile(ctx context.Context, path string, content []byt
 	}, nil
 }
 
-func (s *GitHubStore) DeleteFile(ctx context.Context, path string, sha string) error {
+func (s *GitHubStore) DeleteFile(ctx context.Context, path string, sha string, reason string) error {
 	if sha == "" {
 		return nil
 	}
 	_, err := s.gh(ctx, "api", "--method", "DELETE", s.contentsEndpoint("files/"+path),
-		"-f", "message=pb: delete "+path,
+		"-f", "message=pb: "+reason+" "+path,
 		"-f", "sha="+sha,
 	)
 	return err
@@ -180,6 +249,10 @@ func (s *GitHubStore) contentsEndpoint(path string) string {
 	return fmt.Sprintf("repos/%s/%s/contents/%s", s.owner, s.repo, escaped)
 }
 
+func (s *GitHubStore) contentsEndpointWithRef(path string, ref string) string {
+	return s.contentsEndpoint(path) + "?ref=" + url.QueryEscape(ref)
+}
+
 func (s *GitHubStore) gh(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
@@ -201,4 +274,28 @@ func (s *GitHubStore) gh(ctx context.Context, args ...string) ([]byte, error) {
 
 func checksum(content []byte) string {
 	return modelChecksum(content)
+}
+
+func shortVersionID(sha string) string {
+	if len(sha) <= 12 {
+		return sha
+	}
+	return sha[:12]
+}
+
+func parseReason(message string) string {
+	message = strings.TrimSpace(strings.ToLower(message))
+	if strings.HasPrefix(message, "pb: ") {
+		message = strings.TrimPrefix(message, "pb: ")
+	}
+	fields := strings.Fields(message)
+	if len(fields) == 0 {
+		return "unknown"
+	}
+	switch fields[0] {
+	case "save", "sync", "restore", "delete":
+		return fields[0]
+	default:
+		return "unknown"
+	}
 }

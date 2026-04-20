@@ -110,16 +110,27 @@ func (m *Manager) DeleteContent(path string) error {
 func (m *Manager) SaveRecovery(sessionID, path string, content []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	name := sanitizeFilename(sessionID+"-"+path) + ".recovery"
-	target := filepath.Join(m.paths.RecoveryDir, name)
+	target := m.recoveryPath(sessionID, path)
 	return atomicWrite(target, content, 0o600)
+}
+
+func (m *Manager) LoadRecovery(sessionID, path string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	data, err := os.ReadFile(m.recoveryPath(sessionID, path))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, errs.Wrap(errs.CodeNotFound, "recovery draft not found", err)
+		}
+		return nil, errs.Wrap(errs.CodeLocalCorruption, "read recovery file", err)
+	}
+	return data, nil
 }
 
 func (m *Manager) RemoveRecovery(sessionID, path string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	name := sanitizeFilename(sessionID+"-"+path) + ".recovery"
-	err := os.Remove(filepath.Join(m.paths.RecoveryDir, name))
+	err := os.Remove(m.recoveryPath(sessionID, path))
 	if err != nil && !os.IsNotExist(err) {
 		return errs.Wrap(errs.CodeLocalCorruption, "remove recovery file", err)
 	}
@@ -138,6 +149,11 @@ func (m *Manager) contentPath(path string) string {
 func sanitizeFilename(input string) string {
 	sum := sha256.Sum256([]byte(input))
 	return hex.EncodeToString(sum[:12])
+}
+
+func (m *Manager) recoveryPath(sessionID, path string) string {
+	name := sanitizeFilename(sessionID+"-"+path) + ".recovery"
+	return filepath.Join(m.paths.RecoveryDir, name)
 }
 
 func (m *Manager) loadStateUnlocked() (*model.State, error) {

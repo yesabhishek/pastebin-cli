@@ -42,13 +42,14 @@ type Model struct {
 	status    string
 	lastSaved time.Time
 	dirty     bool
+	recovered bool
 	saving    bool
 	quitting  bool
 	width     int
 	height    int
 }
 
-func New(title, path, initial string, saver Saver) Model {
+func New(title, path, initial string, saver Saver, initialStatus string, recovered bool) Model {
 	ta := textarea.New()
 	ta.Placeholder = "Write your text here..."
 	ta.SetValue(initial)
@@ -57,12 +58,16 @@ func New(title, path, initial string, saver Saver) Model {
 	ta.CharLimit = 0
 	ta.SetWidth(100)
 	ta.SetHeight(24)
+	if initialStatus == "" {
+		initialStatus = "Ctrl+S save • Ctrl+Q quit • autosave every 2s"
+	}
 	return Model{
-		title:    title,
-		path:     path,
-		textarea: ta,
-		saver:    saver,
-		status:   "Ctrl+S save • Ctrl+Q quit • autosave every 2s",
+		title:     title,
+		path:      path,
+		textarea:  ta,
+		saver:     saver,
+		status:    initialStatus,
+		recovered: recovered,
 	}
 }
 
@@ -92,7 +97,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.quitting = true
 			if !m.dirty {
-				if m.saver != nil {
+				if m.saver != nil && !m.recovered {
 					_ = m.saver.ClearRecovery()
 				}
 				return m, tea.Quit
@@ -108,11 +113,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case autosaveTick:
 		cmds := []tea.Cmd{tickAutosave()}
-		if m.dirty && !m.saving {
-			m.saving = true
-			m.status = "Autosaving..."
-			cmds = append(cmds, m.saveCmd())
-		} else if m.dirty && m.saver != nil {
+		if m.dirty && m.saver != nil {
+			m.status = "Draft autosaved locally"
 			cmds = append(cmds, m.recoveryCmd())
 		}
 		return m, tea.Batch(cmds...)
@@ -125,6 +127,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.lastSaved = time.Now()
 			m.dirty = false
+			m.recovered = false
 			m.path = msg.result.Path
 			if msg.result.ConflictPath != "" {
 				m.path = msg.result.ConflictPath
@@ -144,6 +147,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case recoveryDoneMsg:
 		if msg.err != nil {
 			m.status = "Autosave recovery failed: " + msg.err.Error()
+		} else if m.dirty {
+			m.status = "Draft autosaved locally"
 		}
 	}
 	return updateTextarea(&m, msg)

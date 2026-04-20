@@ -9,6 +9,7 @@ import (
 
 	"github.com/yesabhishek/pastebin-cli/internal/cache"
 	"github.com/yesabhishek/pastebin-cli/internal/config"
+	"github.com/yesabhishek/pastebin-cli/internal/errs"
 	"github.com/yesabhishek/pastebin-cli/internal/model"
 	"github.com/yesabhishek/pastebin-cli/internal/store"
 )
@@ -87,6 +88,13 @@ func TestSyncPullsRemoteAndPushesPendingWrites(t *testing.T) {
 	if err := cacheMgr.SaveState(state); err != nil {
 		t.Fatalf("save state: %v", err)
 	}
+	if err := cacheMgr.UpsertJournalEntry(&model.JournalEntry{
+		Path:      "local.txt",
+		Operation: model.PendingUpsert,
+		Reason:    "save",
+	}); err != nil {
+		t.Fatalf("save journal: %v", err)
+	}
 
 	fake.snapshot = &store.RemoteSnapshot{
 		Index: &model.RemoteIndex{
@@ -127,6 +135,130 @@ func TestSyncPullsRemoteAndPushesPendingWrites(t *testing.T) {
 	}
 }
 
+func TestListShowAndRestoreVersion(t *testing.T) {
+	t.Parallel()
+
+	svc, cacheMgr, fake := newTestService(t)
+	version1 := model.VersionEntry{
+		ID:        "111111111111",
+		CommitSHA: "111111111111aaaa",
+		Path:      "notes/a.txt",
+		Timestamp: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+		Reason:    "save",
+	}
+	version2 := model.VersionEntry{
+		ID:        "222222222222",
+		CommitSHA: "222222222222bbbb",
+		Path:      "notes/a.txt",
+		Timestamp: time.Date(2026, 4, 20, 11, 0, 0, 0, time.UTC),
+		Reason:    "restore",
+	}
+	fake.versions["notes/a.txt"] = []model.VersionEntry{version2, version1}
+	fake.versionContent[version1.CommitSHA] = []byte("old body")
+	fake.versionContent[version2.CommitSHA] = []byte("new body")
+	fake.snapshot.Index.Files["notes/a.txt"] = &model.RemoteFile{
+		Path:      "notes/a.txt",
+		Revision:  "base-head",
+		Checksum:  "sum-head",
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	versions, err := svc.ListVersions(context.Background(), "notes/a.txt")
+	if err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	if len(versions) != 2 || versions[0].ID != version2.ID {
+		t.Fatalf("unexpected versions: %#v", versions)
+	}
+
+	entry, content, err := svc.ShowVersion(context.Background(), "notes/a.txt", "11111111")
+	if err != nil {
+		t.Fatalf("show version: %v", err)
+	}
+	if entry.CommitSHA != version1.CommitSHA || string(content) != "old body" {
+		t.Fatalf("unexpected version lookup result: entry=%#v content=%q", entry, string(content))
+	}
+
+	restored, outcome, err := svc.RestoreVersion(context.Background(), "notes/a.txt", version1.ID)
+	if err != nil {
+		t.Fatalf("restore version: %v", err)
+	}
+	if restored.CommitSHA != version1.CommitSHA {
+		t.Fatalf("unexpected restored version: %#v", restored)
+	}
+	if !outcome.RemoteSaved {
+		t.Fatalf("expected restore to create a durable remote version")
+	}
+	if fake.lastUpsertReason != "restore" {
+		t.Fatalf("expected restore reason, got %q", fake.lastUpsertReason)
+	}
+	current, err := cacheMgr.LoadContent("notes/a.txt")
+	if err != nil {
+		t.Fatalf("load restored content: %v", err)
+	}
+	if string(current) != "old body" {
+		t.Fatalf("unexpected restored content: %q", string(current))
+	}
+}
+
+func TestShowVersionAmbiguousPrefix(t *testing.T) {
+	t.Parallel()
+
+	svc, _, fake := newTestService(t)
+	fake.versions["notes/a.txt"] = []model.VersionEntry{
+		{ID: "abc111111111", CommitSHA: "abc111111111aaaa", Path: "notes/a.txt", Timestamp: time.Now().UTC(), Reason: "save"},
+		{ID: "abc222222222", CommitSHA: "abc222222222bbbb", Path: "notes/a.txt", Timestamp: time.Now().UTC(), Reason: "save"},
+	}
+
+	_, _, err := svc.ShowVersion(context.Background(), "notes/a.txt", "abc")
+	if err == nil {
+		t.Fatalf("expected ambiguous version error")
+	}
+}
+
+func TestListVersionsHandlesLargeHistorySet(t *testing.T) {
+	t.Parallel()
+
+	svc, _, fake := newTestService(t)
+	versions := make([]model.VersionEntry, 0, 150)
+	for i := 0; i < 150; i++ {
+		id := strings.Repeat("a", 8) + string(rune('a'+(i%26))) + strings.Repeat("b", 3)
+		sha := id + strings.Repeat("c", 28)
+		versions = append(versions, model.VersionEntry{
+			ID:        sha[:12],
+			CommitSHA: sha,
+			Path:      "notes/history.txt",
+			Timestamp: time.Now().UTC().Add(-time.Duration(i) * time.Minute),
+			Reason:    "save",
+		})
+	}
+	fake.versions["notes/history.txt"] = versions
+
+	got, err := svc.ListVersions(context.Background(), "notes/history.txt")
+	if err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	if len(got) != 150 {
+		t.Fatalf("expected 150 versions, got %d", len(got))
+	}
+}
+
+func TestReadContentDoesNotUseRecoveryDraft(t *testing.T) {
+	t.Parallel()
+
+	svc, cacheMgr, _ := newTestService(t)
+	if err := cacheMgr.SaveRecovery("device1", "notes/recovery.txt", []byte("draft only")); err != nil {
+		t.Fatalf("save recovery: %v", err)
+	}
+	_, err := svc.ReadContent(context.Background(), "notes/recovery.txt")
+	if err == nil {
+		t.Fatalf("expected read to ignore recovery draft and fail without durable content")
+	}
+	if !errs.IsCode(err, errs.CodeNotFound) {
+		t.Fatalf("expected not found error, got %v", err)
+	}
+}
+
 func newTestService(t *testing.T) (*Service, *cache.Manager, *fakeStore) {
 	t.Helper()
 
@@ -147,7 +279,9 @@ func newTestService(t *testing.T) (*Service, *cache.Manager, *fakeStore) {
 		snapshot: &store.RemoteSnapshot{
 			Index: &model.RemoteIndex{Version: model.IndexVersion, Files: map[string]*model.RemoteFile{}},
 		},
-		files: map[string]fakeRemoteFile{},
+		files:          map[string]fakeRemoteFile{},
+		versions:       map[string][]model.VersionEntry{},
+		versionContent: map[string][]byte{},
 	}
 	cfg := &model.Config{
 		Owner:    "tester",
@@ -159,8 +293,12 @@ func newTestService(t *testing.T) (*Service, *cache.Manager, *fakeStore) {
 }
 
 type fakeStore struct {
-	snapshot *store.RemoteSnapshot
-	files    map[string]fakeRemoteFile
+	snapshot         *store.RemoteSnapshot
+	files            map[string]fakeRemoteFile
+	versions         map[string][]model.VersionEntry
+	versionContent   map[string][]byte
+	lastUpsertReason string
+	lastDeleteReason string
 }
 
 type fakeRemoteFile struct {
@@ -177,13 +315,28 @@ func (f *fakeStore) FetchIndex(context.Context) (*store.RemoteSnapshot, error) {
 }
 
 func (f *fakeStore) FetchFile(_ context.Context, path string) ([]byte, string, error) {
-	file := f.files[path]
+	file, ok := f.files[path]
+	if !ok {
+		return nil, "", errs.Wrap(errs.CodeNotFound, "remote file not found", nil)
+	}
 	return append([]byte(nil), file.content...), file.sha, nil
 }
 
-func (f *fakeStore) UpsertFile(_ context.Context, path string, content []byte, _ string) (*model.RemoteFile, error) {
+func (f *fakeStore) FetchFileAtRevision(_ context.Context, _ string, revision string) ([]byte, error) {
+	return append([]byte(nil), f.versionContent[revision]...), nil
+}
+
+func (f *fakeStore) ListVersions(_ context.Context, path string) ([]model.VersionEntry, error) {
+	items := f.versions[path]
+	cloned := make([]model.VersionEntry, len(items))
+	copy(cloned, items)
+	return cloned, nil
+}
+
+func (f *fakeStore) UpsertFile(_ context.Context, path string, content []byte, _ string, reason string) (*model.RemoteFile, error) {
 	sha := "sha-" + strings.ReplaceAll(path, "/", "_")
 	f.files[path] = fakeRemoteFile{content: append([]byte(nil), content...), sha: sha}
+	f.lastUpsertReason = reason
 	record := &model.RemoteFile{
 		Path:      path,
 		Revision:  sha,
@@ -194,8 +347,9 @@ func (f *fakeStore) UpsertFile(_ context.Context, path string, content []byte, _
 	return record, nil
 }
 
-func (f *fakeStore) DeleteFile(_ context.Context, path string, _ string) error {
+func (f *fakeStore) DeleteFile(_ context.Context, path string, _ string, reason string) error {
 	delete(f.files, path)
+	f.lastDeleteReason = reason
 	return nil
 }
 

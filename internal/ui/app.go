@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/yesabhishek/pastebin-cli/internal/auth"
 	"github.com/yesabhishek/pastebin-cli/internal/cache"
@@ -91,6 +92,21 @@ func (a *App) Run(ctx context.Context, args []string) error {
 			return errs.Wrap(errs.CodeUsage, "usage: pb read <path>", nil)
 		}
 		return a.readPath(ctx, commandArgs[0], *jsonOut)
+	case "versions":
+		if len(commandArgs) != 1 {
+			return errs.Wrap(errs.CodeUsage, "usage: pb versions <path>", nil)
+		}
+		return a.versionsPath(ctx, commandArgs[0], *jsonOut)
+	case "show":
+		if len(commandArgs) != 2 {
+			return errs.Wrap(errs.CodeUsage, "usage: pb show <path> <version-id>", nil)
+		}
+		return a.showVersion(ctx, commandArgs[0], commandArgs[1], *jsonOut)
+	case "restore":
+		if len(commandArgs) != 2 {
+			return errs.Wrap(errs.CodeUsage, "usage: pb restore <path> <version-id>", nil)
+		}
+		return a.restoreVersion(ctx, commandArgs[0], commandArgs[1])
 	case "delete":
 		return a.deletePath(ctx, commandArgs, *jsonOut)
 	case "list":
@@ -115,6 +131,9 @@ Commands:
   pb new <path>
   pb edit <path>
   pb read <path>
+  pb versions <path>
+  pb show <path> <version-id>
+  pb restore <path> <version-id>
   pb delete <path> [--yes]
   pb list [prefix] [--refresh]
   pb sync
@@ -123,7 +142,7 @@ Commands:
 
 Global flags:
   --repo <name>  override GitHub storage repo
-  --json         emit JSON output
+  --json         emit JSON output for read, versions, show, list, and status
 `))
 	fmt.Fprintln(a.out)
 }
@@ -187,22 +206,19 @@ func (a *App) editPath(ctx context.Context, filePath string, isNew bool) error {
 	if err != nil {
 		return err
 	}
-	svc := a.service(cfg)
-	var initial []byte
-	if !isNew {
-		initial, err = svc.ReadContent(ctx, filePath)
-		if err != nil && !errs.IsCode(err, errs.CodeNotFound) {
-			return err
-		}
+	cacheMgr := cache.New(a.paths)
+	svc := syncer.NewService(a.paths, cfg, cacheMgr, store.NewGitHub(cfg.Owner, cfg.Repo))
+	initial, recovered, status, err := a.loadEditorInitial(ctx, svc, cacheMgr, cfg.DeviceID, filePath, isNew)
+	if err != nil {
+		return err
 	}
-	sessionID := filePath + "-" + cfg.DeviceID
 	saver := &editorSaver{
-		sessionID: sessionID,
+		sessionID: cfg.DeviceID,
 		filePath:  filePath,
 		service:   svc,
-		cache:     cache.New(a.paths),
+		cache:     cacheMgr,
 	}
-	model := editor.New("pb editor", filePath, string(initial), saver)
+	model := editor.New("pb editor", filePath, string(initial), saver, status, recovered)
 	return editor.Run(a.in, a.out, model)
 }
 
@@ -223,6 +239,73 @@ func (a *App) readPath(ctx context.Context, filePath string, jsonOut bool) error
 	}
 	_, err = fmt.Fprint(a.out, string(content))
 	return err
+}
+
+func (a *App) versionsPath(ctx context.Context, filePath string, jsonOut bool) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	versions, err := a.service(cfg).ListVersions(ctx, filePath)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return writeJSON(a.out, versions)
+	}
+	for _, version := range versions {
+		fmt.Fprintf(a.out, "%s\t%s\t%s\n",
+			version.ID,
+			version.Timestamp.In(time.Local).Format("2006-01-02 15:04:05 MST"),
+			version.Reason,
+		)
+	}
+	return nil
+}
+
+func (a *App) showVersion(ctx context.Context, filePath string, versionID string, jsonOut bool) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	version, content, err := a.service(cfg).ShowVersion(ctx, filePath, versionID)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return writeJSON(a.out, map[string]any{
+			"path":       filePath,
+			"version_id": version.ID,
+			"commit_sha": version.CommitSHA,
+			"timestamp":  version.Timestamp,
+			"reason":     version.Reason,
+			"content":    string(content),
+		})
+	}
+	_, err = fmt.Fprint(a.out, string(content))
+	return err
+}
+
+func (a *App) restoreVersion(ctx context.Context, filePath string, versionID string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	version, outcome, err := a.service(cfg).RestoreVersion(ctx, filePath, versionID)
+	if err != nil {
+		return err
+	}
+	msg := outcome.Message
+	if msg == "" {
+		msg = "restored and synced to GitHub"
+	}
+	fmt.Fprintf(a.out, "Restored %s from %s (%s). %s\n",
+		filePath,
+		version.ID,
+		version.Timestamp.In(time.Local).Format("2006-01-02 15:04:05 MST"),
+		msg,
+	)
+	return nil
 }
 
 func (a *App) deletePath(ctx context.Context, args []string, jsonOut bool) error {
@@ -352,10 +435,12 @@ type editorSaver struct {
 }
 
 func (e *editorSaver) Save(ctx context.Context, content string) (editor.SaveResult, error) {
+	previousPath := e.filePath
 	outcome, err := e.service.SaveContent(ctx, e.filePath, []byte(content))
 	if err != nil {
 		return editor.SaveResult{}, err
 	}
+	_ = e.cache.RemoveRecovery(e.sessionID, previousPath)
 	if outcome.ConflictPath != "" {
 		e.filePath = outcome.ConflictPath
 	}
@@ -379,4 +464,23 @@ func writeJSON(w io.Writer, v any) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+func (a *App) loadEditorInitial(ctx context.Context, svc *syncer.Service, cacheMgr *cache.Manager, deviceID string, filePath string, isNew bool) ([]byte, bool, string, error) {
+	var initial []byte
+	if !isNew {
+		content, err := svc.ReadContent(ctx, filePath)
+		if err != nil && !errs.IsCode(err, errs.CodeNotFound) {
+			return nil, false, "", err
+		}
+		initial = content
+	}
+	recovery, err := cacheMgr.LoadRecovery(deviceID, filePath)
+	if err == nil {
+		return recovery, true, "Recovered local draft autosave • Ctrl+S save • Ctrl+Q quit", nil
+	}
+	if err != nil && !errs.IsCode(err, errs.CodeNotFound) {
+		return nil, false, "", err
+	}
+	return initial, false, "", nil
 }
