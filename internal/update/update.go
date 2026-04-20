@@ -176,7 +176,7 @@ func (m *Manager) Install(ctx context.Context, release *Release) (*Result, error
 	if err != nil {
 		return nil, errs.Wrap(errs.CodeLocalCorruption, "resolve current executable", err)
 	}
-	if runtime.GOOS == "windows" || m.goos == "windows" {
+	if m.goos == "windows" {
 		if err := m.scheduleWindowsInstall(target, executableData); err != nil {
 			return nil, err
 		}
