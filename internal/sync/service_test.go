@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -189,6 +190,12 @@ func TestListShowAndRestoreVersion(t *testing.T) {
 	if !outcome.RemoteSaved {
 		t.Fatalf("expected restore to create a durable remote version")
 	}
+	if outcome.VersionID == "" {
+		t.Fatalf("expected restore to surface new version id")
+	}
+	if !strings.Contains(outcome.Message, outcome.VersionID) {
+		t.Fatalf("expected restore message to include version id, got %q", outcome.Message)
+	}
 	if fake.lastUpsertReason != "restore" {
 		t.Fatalf("expected restore reason, got %q", fake.lastUpsertReason)
 	}
@@ -240,6 +247,113 @@ func TestListVersionsHandlesLargeHistorySet(t *testing.T) {
 	}
 	if len(got) != 150 {
 		t.Fatalf("expected 150 versions, got %d", len(got))
+	}
+}
+
+func TestSaveContentCreatesCheckpointAndSurfacesVersionID(t *testing.T) {
+	t.Parallel()
+
+	svc, cacheMgr, fake := newTestService(t)
+	fake.snapshot.Index.Files["notes/checkpoint.txt"] = &model.RemoteFile{
+		Path:      "notes/checkpoint.txt",
+		Revision:  "blob-initial",
+		Checksum:  "checksum-notes/checkpoint.txt",
+		UpdatedAt: time.Now().UTC(),
+	}
+	state := &model.State{
+		Version: model.StateVersion,
+		Files: map[string]*model.TrackedFile{
+			"notes/checkpoint.txt": {
+				Path:           "notes/checkpoint.txt",
+				BaseRevision:   "blob-initial",
+				RemoteRevision: "blob-initial",
+				Checksum:       "old-sum",
+				RemoteChecksum: "old-sum",
+			},
+		},
+	}
+	if err := cacheMgr.SaveState(state); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	outcome, err := svc.SaveContent(context.Background(), "notes/checkpoint.txt", []byte("fresh content"))
+	if err != nil {
+		t.Fatalf("save content: %v", err)
+	}
+	if !outcome.RemoteSaved {
+		t.Fatalf("expected durable remote save")
+	}
+	if outcome.VersionID == "" {
+		t.Fatalf("expected save to surface version id")
+	}
+	if !strings.Contains(outcome.Message, outcome.VersionID) {
+		t.Fatalf("expected save message to include version id, got %q", outcome.Message)
+	}
+
+	versions, err := svc.ListVersions(context.Background(), "notes/checkpoint.txt")
+	if err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	if len(versions) == 0 || versions[0].ID != outcome.VersionID {
+		t.Fatalf("expected latest version %q at top, got %#v", outcome.VersionID, versions)
+	}
+}
+
+func TestSaveContentDoesNotCreateCheckpointWhenUnchanged(t *testing.T) {
+	t.Parallel()
+
+	svc, cacheMgr, fake := newTestService(t)
+	checksum, err := cacheMgr.SaveContent("notes/unchanged.txt", []byte("same content"))
+	if err != nil {
+		t.Fatalf("save content: %v", err)
+	}
+	state := &model.State{
+		Version: model.StateVersion,
+		Files: map[string]*model.TrackedFile{
+			"notes/unchanged.txt": {
+				Path:           "notes/unchanged.txt",
+				BaseRevision:   "blob-existing",
+				RemoteRevision: "blob-existing",
+				Checksum:       checksum,
+				RemoteChecksum: checksum,
+				PendingOp:      model.PendingNone,
+			},
+		},
+	}
+	if err := cacheMgr.SaveState(state); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+	fake.snapshot.Index.Files["notes/unchanged.txt"] = &model.RemoteFile{
+		Path:      "notes/unchanged.txt",
+		Revision:  "blob-existing",
+		Checksum:  checksum,
+		UpdatedAt: time.Now().UTC(),
+	}
+	fake.versions["notes/unchanged.txt"] = []model.VersionEntry{
+		{
+			ID:        "existingver12",
+			CommitSHA: "existingver1234567890",
+			Path:      "notes/unchanged.txt",
+			Timestamp: time.Now().UTC(),
+			Reason:    "save",
+		},
+	}
+
+	outcome, err := svc.SaveContent(context.Background(), "notes/unchanged.txt", []byte("same content"))
+	if err != nil {
+		t.Fatalf("save unchanged content: %v", err)
+	}
+	if outcome.RemoteSaved {
+		t.Fatalf("did not expect unchanged save to create a remote checkpoint")
+	}
+	if outcome.VersionID != "existingver12" {
+		t.Fatalf("expected existing latest version id, got %q", outcome.VersionID)
+	}
+	if outcome.Message != "Already saved; no new version created" {
+		t.Fatalf("unexpected unchanged save message: %q", outcome.Message)
+	}
+	if fake.upsertCount != 0 {
+		t.Fatalf("expected no remote upsert for unchanged save, got %d", fake.upsertCount)
 	}
 }
 
@@ -299,6 +413,7 @@ type fakeStore struct {
 	versionContent   map[string][]byte
 	lastUpsertReason string
 	lastDeleteReason string
+	upsertCount      int
 }
 
 type fakeRemoteFile struct {
@@ -334,7 +449,9 @@ func (f *fakeStore) ListVersions(_ context.Context, path string) ([]model.Versio
 }
 
 func (f *fakeStore) UpsertFile(_ context.Context, path string, content []byte, _ string, reason string) (*model.RemoteFile, error) {
-	sha := "sha-" + strings.ReplaceAll(path, "/", "_")
+	f.upsertCount++
+	sha := fmt.Sprintf("blob-%s-%d", strings.ReplaceAll(path, "/", "_"), f.upsertCount)
+	commitSHA := fmt.Sprintf("commit-%012d-%s", f.upsertCount, strings.ReplaceAll(path, "/", "-"))
 	f.files[path] = fakeRemoteFile{content: append([]byte(nil), content...), sha: sha}
 	f.lastUpsertReason = reason
 	record := &model.RemoteFile{
@@ -344,6 +461,15 @@ func (f *fakeStore) UpsertFile(_ context.Context, path string, content []byte, _
 		UpdatedAt: time.Now().UTC(),
 	}
 	f.snapshot.Index.Files[path] = record
+	version := model.VersionEntry{
+		ID:        commitSHA[:12],
+		CommitSHA: commitSHA,
+		Path:      path,
+		Timestamp: record.UpdatedAt,
+		Reason:    reason,
+	}
+	f.versions[path] = append([]model.VersionEntry{version}, f.versions[path]...)
+	f.versionContent[commitSHA] = append([]byte(nil), content...)
 	return record, nil
 }
 

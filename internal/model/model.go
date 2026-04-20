@@ -83,6 +83,7 @@ type SaveOutcome struct {
 	ConflictPath string
 	RemoteSaved  bool
 	Message      string
+	VersionID    string
 }
 
 type VersionEntry struct {

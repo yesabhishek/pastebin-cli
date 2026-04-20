@@ -128,6 +128,13 @@ func (s *Service) saveContentLocked(ctx context.Context, filePath string, conten
 	if err != nil {
 		return nil, err
 	}
+	if shouldSkipVersionedSave(tracked, checksum) {
+		return &model.SaveOutcome{
+			Path:      filePath,
+			Message:   "Already saved; no new version created",
+			VersionID: latestVersionID(ctx, s.store, filePath),
+		}, nil
+	}
 	localRevision := fmt.Sprintf("%d", time.Now().UTC().UnixNano())
 	tracked.Checksum = checksum
 	tracked.LocalRevision = localRevision
@@ -466,10 +473,20 @@ func (s *Service) applyUpsert(ctx context.Context, state *model.State, snapshot 
 	if err := s.cache.SaveState(state); err != nil {
 		return nil, err
 	}
+	versionID := latestVersionID(ctx, s.store, filePath)
+	message := "saved locally and synced to GitHub"
+	if versionID != "" {
+		if reason == "restore" {
+			message = "Restored as version " + versionID
+		} else {
+			message = "Saved as version " + versionID
+		}
+	}
 	return &model.SaveOutcome{
 		Path:        filePath,
 		RemoteSaved: true,
-		Message:     "saved locally and synced to GitHub",
+		Message:     message,
+		VersionID:   versionID,
 	}, nil
 }
 
@@ -574,4 +591,25 @@ func journalReason(journal *model.Journal, path string, fallback string) string 
 		return fallback
 	}
 	return entry.Reason
+}
+
+func shouldSkipVersionedSave(tracked *model.TrackedFile, checksum string) bool {
+	if tracked == nil {
+		return false
+	}
+	if tracked.PendingOp != model.PendingNone || tracked.Deleted {
+		return false
+	}
+	if tracked.BaseRevision == "" || tracked.RemoteRevision == "" {
+		return false
+	}
+	return tracked.Checksum == checksum && tracked.RemoteChecksum == checksum
+}
+
+func latestVersionID(ctx context.Context, remote store.RemoteStore, filePath string) string {
+	versions, err := remote.ListVersions(ctx, filePath)
+	if err != nil || len(versions) == 0 {
+		return ""
+	}
+	return versions[0].ID
 }
