@@ -18,6 +18,10 @@ type Saver interface {
 	ClearRecovery() error
 }
 
+type ImagePaster interface {
+	PasteImage(context.Context) (SaveResult, error)
+}
+
 type SaveResult struct {
 	Path         string
 	ConflictPath string
@@ -32,6 +36,10 @@ type saveDoneMsg struct {
 }
 type recoveryDoneMsg struct {
 	err error
+}
+type pasteImageDoneMsg struct {
+	result SaveResult
+	err    error
 }
 
 type Model struct {
@@ -59,7 +67,7 @@ func New(title, path, initial string, saver Saver, initialStatus string, recover
 	ta.SetWidth(100)
 	ta.SetHeight(24)
 	if initialStatus == "" {
-		initialStatus = "Ctrl+S save • Ctrl+Q quit • autosave every 2s"
+		initialStatus = "Ctrl+S save • Ctrl+Q/Ctrl+X quit • Ctrl+V paste image • autosave every 2s"
 	}
 	return Model{
 		title:     title,
@@ -91,7 +99,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.saving = true
 			m.status = "Saving..."
 			return m, m.saveCmd()
-		case tea.KeyCtrlQ:
+		case tea.KeyCtrlQ, tea.KeyCtrlX:
 			if m.saving {
 				return m, nil
 			}
@@ -105,6 +113,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.saving = true
 			m.status = "Saving before quit..."
 			return m, m.saveCmd()
+		case tea.KeyCtrlV:
+			if m.saving {
+				return m, nil
+			}
+			paster, ok := m.saver.(ImagePaster)
+			if !ok {
+				return updateTextarea(&m, msg)
+			}
+			if m.dirty {
+				m.status = "Save or quit unsaved text before pasting an image, or use `pb paste <path>`"
+				return m, nil
+			}
+			m.saving = true
+			m.status = "Pasting image from clipboard..."
+			return m, m.pasteImageCmd(paster)
 		}
 		m.dirty = true
 		m.status = "Unsaved changes"
@@ -150,6 +173,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if m.dirty {
 			m.status = "Draft autosaved locally"
 		}
+	case pasteImageDoneMsg:
+		m.saving = false
+		if msg.err != nil {
+			m.status = "Image paste failed: " + msg.err.Error()
+		} else {
+			m.lastSaved = time.Now()
+			m.dirty = false
+			m.recovered = false
+			m.path = msg.result.Path
+			if msg.result.ConflictPath != "" {
+				m.path = msg.result.ConflictPath
+			}
+			if msg.result.Message != "" {
+				m.status = msg.result.Message
+			} else {
+				m.status = "Image pasted and saved"
+			}
+		}
 	}
 	return updateTextarea(&m, msg)
 }
@@ -183,6 +224,13 @@ func (m Model) recoveryCmd() tea.Cmd {
 	return func() tea.Msg {
 		err := m.saver.SaveRecovery(context.Background(), content)
 		return recoveryDoneMsg{err: err}
+	}
+}
+
+func (m Model) pasteImageCmd(paster ImagePaster) tea.Cmd {
+	return func() tea.Msg {
+		result, err := paster.PasteImage(context.Background())
+		return pasteImageDoneMsg{result: result, err: err}
 	}
 }
 

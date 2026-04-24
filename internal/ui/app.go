@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	pathpkg "path"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/yesabhishek/pastebin-cli/internal/config"
 	"github.com/yesabhishek/pastebin-cli/internal/editor"
 	"github.com/yesabhishek/pastebin-cli/internal/errs"
+	"github.com/yesabhishek/pastebin-cli/internal/media"
 	"github.com/yesabhishek/pastebin-cli/internal/model"
 	"github.com/yesabhishek/pastebin-cli/internal/store"
 	syncer "github.com/yesabhishek/pastebin-cli/internal/sync"
@@ -31,6 +33,9 @@ type App struct {
 	auth        *auth.GitHubAuth
 	updater     *update.Manager
 	interactive bool
+	clipboard   media.Clipboard
+	viewer      media.Viewer
+	remoteStore func(*model.Config) store.RemoteStore
 }
 
 func NewApp(in io.Reader, out, errOut io.Writer) (*App, error) {
@@ -49,6 +54,11 @@ func NewApp(in io.Reader, out, errOut io.Writer) (*App, error) {
 		auth:        auth.New(),
 		updater:     update.NewManager(version.Current),
 		interactive: isInteractive(in, out),
+		clipboard:   media.SystemClipboard{},
+		viewer:      media.SystemViewer{},
+		remoteStore: func(cfg *model.Config) store.RemoteStore {
+			return store.NewGitHub(cfg.Owner, cfg.Repo)
+		},
 	}, nil
 }
 
@@ -100,10 +110,17 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		}
 		return a.editPath(ctx, commandArgs[0], false)
 	case "read":
+		return a.readPath(ctx, commandArgs, *jsonOut)
+	case "paste":
 		if len(commandArgs) != 1 {
-			return errs.Wrap(errs.CodeUsage, "usage: pb read <path>", nil)
+			return errs.Wrap(errs.CodeUsage, "usage: pb paste <path>", nil)
 		}
-		return a.readPath(ctx, commandArgs[0], *jsonOut)
+		return a.pastePath(ctx, commandArgs[0])
+	case "copy":
+		if len(commandArgs) != 1 {
+			return errs.Wrap(errs.CodeUsage, "usage: pb copy <path>", nil)
+		}
+		return a.copyPath(ctx, commandArgs[0])
 	case "versions":
 		if len(commandArgs) != 1 {
 			return errs.Wrap(errs.CodeUsage, "usage: pb versions <path>", nil)
@@ -145,7 +162,9 @@ Commands:
   pb version
   pb new <path>
   pb edit <path>
-  pb read <path>
+  pb read <path> [--out <file>]
+  pb paste <path>
+  pb copy <path>
   pb versions <path>
   pb show <path> <version-id>
   pb restore <path> <version-id>
@@ -394,7 +413,7 @@ func (a *App) loadConfig() (*model.Config, error) {
 
 func (a *App) service(cfg *model.Config) *syncer.Service {
 	cacheMgr := cache.New(a.paths)
-	return syncer.NewService(a.paths, cfg, cacheMgr, store.NewGitHub(cfg.Owner, cfg.Repo))
+	return syncer.NewService(a.paths, cfg, cacheMgr, a.remoteStore(cfg))
 }
 
 func (a *App) editPath(ctx context.Context, filePath string, isNew bool) error {
@@ -403,7 +422,7 @@ func (a *App) editPath(ctx context.Context, filePath string, isNew bool) error {
 		return err
 	}
 	cacheMgr := cache.New(a.paths)
-	svc := syncer.NewService(a.paths, cfg, cacheMgr, store.NewGitHub(cfg.Owner, cfg.Repo))
+	svc := syncer.NewService(a.paths, cfg, cacheMgr, a.remoteStore(cfg))
 	initial, recovered, status, err := a.loadEditorInitial(ctx, svc, cacheMgr, cfg.DeviceID, filePath, isNew)
 	if err != nil {
 		return err
@@ -413,12 +432,17 @@ func (a *App) editPath(ctx context.Context, filePath string, isNew bool) error {
 		filePath:  filePath,
 		service:   svc,
 		cache:     cacheMgr,
+		clipboard: a.clipboard,
 	}
 	model := editor.New("pb editor", filePath, string(initial), saver, status, recovered)
 	return editor.Run(a.in, a.out, model)
 }
 
-func (a *App) readPath(ctx context.Context, filePath string, jsonOut bool) error {
+func (a *App) readPath(ctx context.Context, args []string, jsonOut bool) error {
+	filePath, outPath, err := parseReadArgs(args)
+	if err != nil {
+		return err
+	}
 	cfg, err := a.loadConfig()
 	if err != nil {
 		return err
@@ -427,14 +451,171 @@ func (a *App) readPath(ctx context.Context, filePath string, jsonOut bool) error
 	if err != nil {
 		return err
 	}
-	if jsonOut {
-		return writeJSON(a.out, map[string]string{
-			"path":    filePath,
-			"content": string(content),
-		})
+	return a.writeReadContent(filePath, content, outPath, jsonOut)
+}
+
+func parseReadArgs(args []string) (string, string, error) {
+	var filePath string
+	var outPath string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--out":
+			i++
+			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
+				return "", "", errs.Wrap(errs.CodeUsage, "usage: pb read <path> [--out <file>]", nil)
+			}
+			outPath = args[i]
+		case strings.HasPrefix(arg, "--out="):
+			outPath = strings.TrimPrefix(arg, "--out=")
+			if outPath == "" {
+				return "", "", errs.Wrap(errs.CodeUsage, "usage: pb read <path> [--out <file>]", nil)
+			}
+		case strings.HasPrefix(arg, "-"):
+			return "", "", errs.Wrap(errs.CodeUsage, "unknown read flag: "+arg, nil)
+		default:
+			if filePath != "" {
+				return "", "", errs.Wrap(errs.CodeUsage, "usage: pb read <path> [--out <file>]", nil)
+			}
+			filePath = arg
+		}
 	}
-	_, err = fmt.Fprint(a.out, string(content))
+	if filePath == "" {
+		return "", "", errs.Wrap(errs.CodeUsage, "usage: pb read <path> [--out <file>]", nil)
+	}
+	return filePath, outPath, nil
+}
+
+func (a *App) pastePath(ctx context.Context, filePath string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	image, err := a.clipboard.ReadImage()
+	if err != nil {
+		return errs.Wrap(errs.CodeUsage, "read image from clipboard", err)
+	}
+	target := media.NormalizeImagePath(filePath)
+	outcome, err := a.service(cfg).SaveContent(ctx, target, image)
+	if err != nil {
+		return err
+	}
+	msg := outcome.Message
+	if msg == "" {
+		msg = "saved image"
+	}
+	fmt.Fprintf(a.out, "%s: %s\n", outcome.Path, msg)
+	return nil
+}
+
+func (a *App) copyPath(ctx context.Context, filePath string) error {
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	content, err := a.service(cfg).ReadContent(ctx, filePath)
+	if err != nil {
+		return err
+	}
+	if media.IsImage(filePath, content) {
+		clipboardImage, err := media.PNGForClipboard(content)
+		if err != nil {
+			return errs.Wrap(errs.CodeUsage, "copy image to clipboard", err)
+		}
+		if err := a.clipboard.WriteImage(clipboardImage); err != nil {
+			return errs.Wrap(errs.CodeUsage, "copy image to clipboard", err)
+		}
+		fmt.Fprintf(a.out, "Copied image %s to clipboard\n", filePath)
+		return nil
+	}
+	if !media.IsText(content) {
+		return errs.Wrap(errs.CodeUsage, "binary content requires `pb read <path> --out <file>`", nil)
+	}
+	if err := a.clipboard.WriteText(content); err != nil {
+		return errs.Wrap(errs.CodeUsage, "copy text to clipboard", err)
+	}
+	fmt.Fprintf(a.out, "Copied text %s to clipboard\n", filePath)
+	return nil
+}
+
+func (a *App) writeReadContent(filePath string, content []byte, outPath string, jsonOut bool) error {
+	contentType := media.ContentType(filePath, content)
+	if outPath != "" {
+		if err := os.WriteFile(outPath, content, 0o600); err != nil {
+			return errs.Wrap(errs.CodeLocalCorruption, "write output file", err)
+		}
+		if !jsonOut {
+			fmt.Fprintf(a.out, "Wrote %s (%d bytes)\n", outPath, len(content))
+			return nil
+		}
+	}
+	if jsonOut {
+		if media.IsText(content) && !media.IsImage(filePath, content) {
+			payload := map[string]any{
+				"path":         filePath,
+				"content":      string(content),
+				"content_type": contentType,
+				"size":         len(content),
+			}
+			if outPath != "" {
+				payload["out"] = outPath
+			}
+			return writeJSON(a.out, payload)
+		}
+		payload := map[string]any{
+			"path":         filePath,
+			"binary":       true,
+			"content_type": contentType,
+			"size":         len(content),
+		}
+		if outPath != "" {
+			payload["out"] = outPath
+		}
+		return writeJSON(a.out, payload)
+	}
+	if media.IsImage(filePath, content) {
+		viewPath, err := writeTempImage(filePath, content)
+		if err != nil {
+			return err
+		}
+		if err := a.viewer.Open(viewPath); err != nil {
+			return errs.Wrap(errs.CodeLocalCorruption, "open image", err)
+		}
+		fmt.Fprintf(a.out, "Opened %s in the default image viewer\n", filePath)
+		return nil
+	}
+	if !media.IsText(content) {
+		return errs.Wrap(errs.CodeUsage, "binary content requires `pb read <path> --out <file>`", nil)
+	}
+	_, err := fmt.Fprint(a.out, string(content))
 	return err
+}
+
+func writeTempImage(filePath string, content []byte) (string, error) {
+	ext := pathpkg.Ext(filePath)
+	if !media.IsImageExtension(filePath) {
+		switch media.ImageContentType(content) {
+		case media.ContentTypePNG:
+			ext = ".png"
+		case media.ContentTypeJPEG:
+			ext = ".jpg"
+		case media.ContentTypeGIF:
+			ext = ".gif"
+		case media.ContentTypeWEBP:
+			ext = ".webp"
+		default:
+			ext = ".img"
+		}
+	}
+	file, err := os.CreateTemp("", "pb-view-*"+ext)
+	if err != nil {
+		return "", errs.Wrap(errs.CodeLocalCorruption, "create temp image", err)
+	}
+	defer file.Close()
+	if _, err := file.Write(content); err != nil {
+		return "", errs.Wrap(errs.CodeLocalCorruption, "write temp image", err)
+	}
+	return file.Name(), nil
 }
 
 func (a *App) versionsPath(ctx context.Context, filePath string, jsonOut bool) error {
@@ -628,6 +809,7 @@ type editorSaver struct {
 	filePath  string
 	service   *syncer.Service
 	cache     *cache.Manager
+	clipboard media.Clipboard
 }
 
 func (e *editorSaver) Save(ctx context.Context, content string) (editor.SaveResult, error) {
@@ -654,6 +836,34 @@ func (e *editorSaver) SaveRecovery(_ context.Context, content string) error {
 
 func (e *editorSaver) ClearRecovery() error {
 	return e.cache.RemoveRecovery(e.sessionID, e.filePath)
+}
+
+func (e *editorSaver) PasteImage(ctx context.Context) (editor.SaveResult, error) {
+	image, err := e.clipboard.ReadImage()
+	if err != nil {
+		return editor.SaveResult{}, err
+	}
+	previousPath := e.filePath
+	target := media.NormalizeImagePath(e.filePath)
+	outcome, err := e.service.SaveContent(ctx, target, image)
+	if err != nil {
+		return editor.SaveResult{}, err
+	}
+	_ = e.cache.RemoveRecovery(e.sessionID, previousPath)
+	e.filePath = target
+	if outcome.ConflictPath != "" {
+		e.filePath = outcome.ConflictPath
+	}
+	msg := outcome.Message
+	if msg == "" {
+		msg = "Image pasted and saved"
+	}
+	return editor.SaveResult{
+		Path:         outcome.Path,
+		ConflictPath: outcome.ConflictPath,
+		Message:      msg,
+		RemoteSaved:  outcome.RemoteSaved,
+	}, nil
 }
 
 func writeJSON(w io.Writer, v any) error {

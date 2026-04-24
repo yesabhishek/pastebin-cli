@@ -59,10 +59,79 @@ func TestRecoveredEditorDoesNotDropRecoveryOnCleanQuit(t *testing.T) {
 	}
 }
 
+func TestCtrlXSavesDirtyBufferBeforeQuit(t *testing.T) {
+	t.Parallel()
+
+	saver := &fakeSaver{}
+	model := New("pb editor", "notes/a.txt", "", saver, "", false)
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	model = updated.(Model)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("expected save command")
+	}
+	msg := cmd()
+	if _, ok := msg.(saveDoneMsg); !ok {
+		t.Fatalf("expected save done message, got %T", msg)
+	}
+	_, quitCmd := model.Update(msg)
+	if saver.saveCalls != 1 {
+		t.Fatalf("expected one save before Ctrl+X quit, got %d", saver.saveCalls)
+	}
+	if quitCmd == nil {
+		t.Fatalf("expected quit command after save")
+	}
+}
+
+func TestCtrlVPastesImageWhenBufferIsClean(t *testing.T) {
+	t.Parallel()
+
+	saver := &fakeSaver{}
+	model := New("pb editor", "shots/capture", "", saver, "", false)
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatalf("expected paste image command")
+	}
+	msg := cmd()
+	updated, _ = model.Update(msg)
+	model = updated.(Model)
+	if saver.pasteImageCalls != 1 {
+		t.Fatalf("expected one image paste, got %d", saver.pasteImageCalls)
+	}
+	if model.path != "shots/capture.png" {
+		t.Fatalf("expected editor path to update to pasted image path, got %q", model.path)
+	}
+}
+
+func TestCtrlVDoesNotPasteOverDirtyText(t *testing.T) {
+	t.Parallel()
+
+	saver := &fakeSaver{}
+	model := New("pb editor", "shots/capture", "", saver, "", false)
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	model = updated.(Model)
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
+	model = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("did not expect paste command for dirty text buffer")
+	}
+	if saver.pasteImageCalls != 0 {
+		t.Fatalf("expected no image paste, got %d", saver.pasteImageCalls)
+	}
+	if model.status == "" {
+		t.Fatalf("expected status explaining why paste was skipped")
+	}
+}
+
 type fakeSaver struct {
-	saveCalls     int
-	recoveryCalls int
-	clearCalls    int
+	saveCalls       int
+	recoveryCalls   int
+	clearCalls      int
+	pasteImageCalls int
 }
 
 func (f *fakeSaver) Save(context.Context, string) (SaveResult, error) {
@@ -78,4 +147,9 @@ func (f *fakeSaver) SaveRecovery(context.Context, string) error {
 func (f *fakeSaver) ClearRecovery() error {
 	f.clearCalls++
 	return nil
+}
+
+func (f *fakeSaver) PasteImage(context.Context) (SaveResult, error) {
+	f.pasteImageCalls++
+	return SaveResult{Path: "shots/capture.png", Message: "Image pasted and saved"}, nil
 }

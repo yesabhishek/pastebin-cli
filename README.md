@@ -1,13 +1,14 @@
 # pb
 
-`pb` is a GitHub-backed personal pastebin CLI for small text files.
+`pb` is a GitHub-backed personal pastebin CLI for small notes and images.
 
-It stores plaintext files in a dedicated private GitHub repository, keeps a local cache for offline edits, autosaves drafts locally while you work, and gives you explicit save/sync commands plus per-file version history.
+It stores files in a dedicated private GitHub repository, keeps a local cache for offline edits, autosaves text drafts locally while you work, and gives you explicit save/sync commands plus per-file version history.
 
 ## Features
 
-- GitHub-backed text storage with local-first caching and recovery
-- built-in terminal editor with local draft autosave
+- GitHub-backed file storage with local-first caching and recovery
+- built-in terminal editor with local draft autosave and Ctrl+V image paste
+- clipboard image paste/copy commands for screenshots and photos
 - explicit `sync` flow for reconciling changes across devices
 - durable per-file version history with show and restore commands
 - built-in release checks with saved upgrade preferences
@@ -64,6 +65,8 @@ Then run the same checks locally that CI uses:
 ./pb init
 ./pb version
 ./pb new notes/today.txt
+./pb paste photos/screenshot
+./pb copy photos/screenshot.png
 ./pb versions notes/today.txt
 ./pb list
 ./pb sync
@@ -78,7 +81,9 @@ pb init
 pb version
 pb new <path>
 pb edit <path>
-pb read <path>
+pb read <path> [--out <file>]
+pb paste <path>
+pb copy <path>
 pb versions <path>
 pb show <path> <version-id>
 pb restore <path> <version-id>
@@ -93,7 +98,22 @@ pb logout
 Global flags:
 
 - `--repo <name>`: override the default GitHub storage repo
-- `--json`: emit JSON for `read`, `list`, and `status`
+- `--json`: emit JSON for `read`, `versions`, `show`, `list`, and `status`
+
+## Images And Clipboard
+
+- `pb paste <path>` saves the current OS clipboard image as PNG content. If `<path>` has no image extension, pb appends `.png`.
+- `pb copy <path>` copies stored images back to the OS clipboard. Text files are copied as text.
+- `Ctrl+V` in the editor saves a clipboard image to the current path when the text buffer is clean.
+- `pb read <image>` opens stored images in the default image viewer.
+- `pb read <path> --out <file>` writes raw bytes to a file, which is the safest way to script image or binary reads.
+- Clipboard support depends on desktop clipboard access. Linux support is X11-oriented; Wayland sessions may need XWayland/`DISPLAY`.
+
+Editor shortcuts:
+
+- `Ctrl+S`: save
+- `Ctrl+Q` or `Ctrl+X`: save and quit
+- `Ctrl+V`: paste clipboard image when the buffer has no unsaved text
 
 ## Release Updates
 
