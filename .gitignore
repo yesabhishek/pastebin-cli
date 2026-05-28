@@ -1,3 +1,4 @@
 dist/
 /pb
 /pb.exe
+node_modules/
