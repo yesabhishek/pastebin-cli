@@ -1,0 +1,190 @@
+{
+  "name": "pastebin-vscode",
+  "displayName": "Pastebin",
+  "description": "VS Code extension for the pb GitHub-backed scratchpad.",
+  "version": "0.0.6",
+  "publisher": "AbhishekChoudhury",
+  "license": "SEE LICENSE IN LICENSE",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yesabhishek/pastebin-cli.git"
+  },
+  "homepage": "https://github.com/yesabhishek/pastebin-cli#readme",
+  "bugs": {
+    "url": "https://github.com/yesabhishek/pastebin-cli/issues"
+  },
+  "keywords": [
+    "pastebin",
+    "notes",
+    "scratchpad",
+    "github",
+    "sync",
+    "clipboard"
+  ],
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:pastebin.notesView",
+    "onCommand:pastebin.refresh",
+    "onCommand:pastebin.init",
+    "onCommand:pastebin.sync",
+    "onCommand:pastebin.newNote",
+    "onCommand:pastebin.pushCurrentNote",
+    "onCommand:pastebin.buildLocalPB",
+    "onCommand:pastebin.openNote",
+    "onCommand:pastebin.deleteNote",
+    "onCommand:pastebin.showStatus",
+    "onCommand:pastebin.configurePbPath",
+    "onCommand:pastebin.setFilter"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Pastebin",
+      "properties": {
+        "pastebin.pbPath": {
+          "type": "string",
+          "default": "pb",
+          "description": "Path to the pb CLI binary."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "pastebin",
+          "title": "Pastebin",
+          "icon": "media/activity-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "pastebin": [
+        {
+          "id": "pastebin.notesView",
+          "name": "Pastebin"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "pastebin.refresh",
+        "title": "Refresh",
+        "category": "Pastebin",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "pastebin.init",
+        "title": "Initialize",
+        "category": "Pastebin",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "pastebin.sync",
+        "title": "Sync",
+        "category": "Pastebin",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "pastebin.newNote",
+        "title": "New Note",
+        "category": "Pastebin",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "pastebin.pushCurrentNote",
+        "title": "Push Current Note",
+        "category": "Pastebin",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "pastebin.buildLocalPB",
+        "title": "Build Local pb",
+        "category": "Pastebin",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "pastebin.openNote",
+        "title": "Open Note",
+        "category": "Pastebin"
+      },
+      {
+        "command": "pastebin.deleteNote",
+        "title": "Delete Note",
+        "category": "Pastebin"
+      },
+      {
+        "command": "pastebin.showStatus",
+        "title": "Show Status",
+        "category": "Pastebin"
+      },
+      {
+        "command": "pastebin.configurePbPath",
+        "title": "Configure pb Path",
+        "category": "Pastebin"
+      },
+      {
+        "command": "pastebin.setFilter",
+        "title": "Filter",
+        "category": "Pastebin",
+        "icon": "$(filter)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "pastebin.newNote",
+          "when": "view == pastebin.notesView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "pastebin.sync",
+          "when": "view == pastebin.notesView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "pastebin.refresh",
+          "when": "view == pastebin.notesView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "pastebin.setFilter",
+          "when": "view == pastebin.notesView"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "pastebin.pushCurrentNote",
+          "when": "resourceScheme == untitled || resourceScheme == file || resourceScheme == pb-note",
+          "group": "navigation@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "pastebin.openNote",
+          "when": "view == pastebin.notesView && viewItem == pastebinNote",
+          "group": "inline"
+        },
+        {
+          "command": "pastebin.deleteNote",
+          "when": "view == pastebin.notesView && viewItem == pastebinNote",
+          "group": "inline@2"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "npm run build && node --test dist/test/**/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.29",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.8.3"
+  }
+}

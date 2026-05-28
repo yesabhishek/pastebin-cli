@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
@@ -155,6 +156,81 @@ func TestVersionCommandPrintsCurrentVersion(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "pb ") {
 		t.Fatalf("unexpected version output: %q", out.String())
+	}
+}
+
+func TestParseGlobalArgsSupportsInterspersedFlags(t *testing.T) {
+	t.Parallel()
+
+	opts, err := parseGlobalArgs([]string{"list", "notes/", "--json", "--repo", "alt-store"})
+	if err != nil {
+		t.Fatalf("parse global args: %v", err)
+	}
+	if !opts.jsonOut {
+		t.Fatalf("expected json output to be enabled")
+	}
+	if opts.repoOverride != "alt-store" {
+		t.Fatalf("unexpected repo override: %q", opts.repoOverride)
+	}
+	if len(opts.args) != 2 || opts.args[0] != "list" || opts.args[1] != "notes/" {
+		t.Fatalf("unexpected remaining args: %#v", opts.args)
+	}
+}
+
+func TestSaveCommandReadsFromStdinAndEmitsJSON(t *testing.T) {
+	app, fakeRemote, out := newClipboardTestApp(t)
+	app.in = strings.NewReader("hello from vscode")
+
+	if err := app.Run(context.Background(), []string{"save", "notes/vscode.txt", "--stdin", "--json"}); err != nil {
+		t.Fatalf("run save: %v", err)
+	}
+	record, ok := fakeRemote.files["notes/vscode.txt"]
+	if !ok {
+		t.Fatalf("expected note to be persisted remotely")
+	}
+	if string(record.content) != "hello from vscode" {
+		t.Fatalf("unexpected stored content: %q", string(record.content))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("decode save JSON: %v", err)
+	}
+	if payload["path"] != "notes/vscode.txt" {
+		t.Fatalf("unexpected saved path: %#v", payload["path"])
+	}
+}
+
+func TestRestoreCommandEmitsJSON(t *testing.T) {
+	app, fakeRemote, out := newClipboardTestApp(t)
+	cfg, err := app.loadConfig()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	svc := app.service(cfg)
+	if _, err := svc.SaveContent(context.Background(), "notes/a.txt", []byte("one")); err != nil {
+		t.Fatalf("seed version one: %v", err)
+	}
+	if _, err := svc.SaveContent(context.Background(), "notes/a.txt", []byte("two")); err != nil {
+		t.Fatalf("seed version two: %v", err)
+	}
+	if len(fakeRemote.versions["notes/a.txt"]) < 2 {
+		t.Fatalf("expected at least two versions")
+	}
+	oldVersion := fakeRemote.versions["notes/a.txt"][1].ID
+	out.Reset()
+
+	if err := app.Run(context.Background(), []string{"restore", "notes/a.txt", oldVersion, "--json"}); err != nil {
+		t.Fatalf("run restore: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("decode restore JSON: %v", err)
+	}
+	if payload["path"] != "notes/a.txt" {
+		t.Fatalf("unexpected restore path: %#v", payload["path"])
+	}
+	if payload["version_id"] == "" {
+		t.Fatalf("expected restore response to include version_id")
 	}
 }
 

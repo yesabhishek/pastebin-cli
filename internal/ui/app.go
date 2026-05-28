@@ -63,14 +63,11 @@ func NewApp(in io.Reader, out, errOut io.Writer) (*App, error) {
 }
 
 func (a *App) Run(ctx context.Context, args []string) error {
-	global := flag.NewFlagSet("pb", flag.ContinueOnError)
-	global.SetOutput(a.errOut)
-	repoOverride := global.String("repo", "", "override GitHub storage repo")
-	jsonOut := global.Bool("json", false, "emit JSON output")
-	if err := global.Parse(args); err != nil {
-		return errs.Wrap(errs.CodeUsage, "parse flags", err)
+	opts, err := parseGlobalArgs(args)
+	if err != nil {
+		return err
 	}
-	rest := global.Args()
+	rest := opts.args
 	if len(rest) == 0 {
 		a.printHelp()
 		return nil
@@ -89,7 +86,7 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	case "version":
 		return a.printVersion()
 	case "init":
-		cfg, err := a.initConfig(ctx, *repoOverride)
+		cfg, err := a.initConfig(ctx, opts.repoOverride)
 		if err != nil {
 			return err
 		}
@@ -110,7 +107,9 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		}
 		return a.editPath(ctx, commandArgs[0], false)
 	case "read":
-		return a.readPath(ctx, commandArgs, *jsonOut)
+		return a.readPath(ctx, commandArgs, opts.jsonOut)
+	case "save":
+		return a.savePath(ctx, commandArgs, opts.jsonOut)
 	case "paste":
 		if len(commandArgs) != 1 {
 			return errs.Wrap(errs.CodeUsage, "usage: pb paste <path>", nil)
@@ -125,25 +124,25 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		if len(commandArgs) != 1 {
 			return errs.Wrap(errs.CodeUsage, "usage: pb versions <path>", nil)
 		}
-		return a.versionsPath(ctx, commandArgs[0], *jsonOut)
+		return a.versionsPath(ctx, commandArgs[0], opts.jsonOut)
 	case "show":
 		if len(commandArgs) != 2 {
 			return errs.Wrap(errs.CodeUsage, "usage: pb show <path> <version-id>", nil)
 		}
-		return a.showVersion(ctx, commandArgs[0], commandArgs[1], *jsonOut)
+		return a.showVersion(ctx, commandArgs[0], commandArgs[1], opts.jsonOut)
 	case "restore":
 		if len(commandArgs) != 2 {
 			return errs.Wrap(errs.CodeUsage, "usage: pb restore <path> <version-id>", nil)
 		}
-		return a.restoreVersion(ctx, commandArgs[0], commandArgs[1])
+		return a.restoreVersion(ctx, commandArgs[0], commandArgs[1], opts.jsonOut)
 	case "delete":
-		return a.deletePath(ctx, commandArgs, *jsonOut)
+		return a.deletePath(ctx, commandArgs, opts.jsonOut)
 	case "list":
-		return a.listPaths(ctx, commandArgs, *jsonOut)
+		return a.listPaths(ctx, commandArgs, opts.jsonOut)
 	case "sync":
-		return a.sync(ctx, *jsonOut)
+		return a.sync(ctx, opts.jsonOut)
 	case "status":
-		return a.status(ctx, *jsonOut)
+		return a.status(ctx, opts.jsonOut)
 	case "logout":
 		return a.logout()
 	case "upgrade":
@@ -151,6 +150,38 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	default:
 		return errs.Wrap(errs.CodeUsage, "unknown command: "+command, nil)
 	}
+}
+
+type globalOptions struct {
+	repoOverride string
+	jsonOut      bool
+	args         []string
+}
+
+func parseGlobalArgs(args []string) (*globalOptions, error) {
+	opts := &globalOptions{args: make([]string, 0, len(args))}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--json":
+			opts.jsonOut = true
+		case arg == "--repo":
+			i++
+			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
+				return nil, errs.Wrap(errs.CodeUsage, "parse flags: --repo requires a value", nil)
+			}
+			opts.repoOverride = args[i]
+		case strings.HasPrefix(arg, "--repo="):
+			value := strings.TrimSpace(strings.TrimPrefix(arg, "--repo="))
+			if value == "" {
+				return nil, errs.Wrap(errs.CodeUsage, "parse flags: --repo requires a value", nil)
+			}
+			opts.repoOverride = value
+		default:
+			opts.args = append(opts.args, arg)
+		}
+	}
+	return opts, nil
 }
 
 func (a *App) printHelp() {
@@ -163,6 +194,7 @@ Commands:
   pb new <path>
   pb edit <path>
   pb read <path> [--out <file>]
+  pb save <path> --stdin
   pb paste <path>
   pb copy <path>
   pb versions <path>
@@ -177,7 +209,7 @@ Commands:
 
 Global flags:
   --repo <name>  override GitHub storage repo
-  --json         emit JSON output for read, versions, show, list, and status
+  --json         emit JSON output for read, save, versions, show, restore, delete, list, sync, and status
 `))
 	fmt.Fprintln(a.out)
 }
@@ -454,6 +486,55 @@ func (a *App) readPath(ctx context.Context, args []string, jsonOut bool) error {
 	return a.writeReadContent(filePath, content, outPath, jsonOut)
 }
 
+func (a *App) savePath(ctx context.Context, args []string, jsonOut bool) error {
+	stdin := false
+	rest := make([]string, 0, len(args))
+	for _, arg := range args {
+		switch arg {
+		case "--stdin":
+			stdin = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return errs.Wrap(errs.CodeUsage, "unknown save flag: "+arg, nil)
+			}
+			rest = append(rest, arg)
+		}
+	}
+	if len(rest) != 1 {
+		return errs.Wrap(errs.CodeUsage, "usage: pb save <path> --stdin", nil)
+	}
+	if !stdin {
+		return errs.Wrap(errs.CodeUsage, "usage: pb save <path> --stdin", nil)
+	}
+	content, err := io.ReadAll(a.in)
+	if err != nil {
+		return errs.Wrap(errs.CodeLocalCorruption, "read stdin", err)
+	}
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	outcome, err := a.service(cfg).SaveContent(ctx, rest[0], content)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return writeJSON(a.out, map[string]any{
+			"path":          outcome.Path,
+			"remote_saved":  outcome.RemoteSaved,
+			"message":       outcome.Message,
+			"version_id":    outcome.VersionID,
+			"conflict_path": outcome.ConflictPath,
+		})
+	}
+	msg := outcome.Message
+	if msg == "" {
+		msg = "saved"
+	}
+	fmt.Fprintf(a.out, "%s: %s\n", outcome.Path, msg)
+	return nil
+}
+
 func parseReadArgs(args []string) (string, string, error) {
 	var filePath string
 	var outPath string
@@ -663,7 +744,7 @@ func (a *App) showVersion(ctx context.Context, filePath string, versionID string
 	return err
 }
 
-func (a *App) restoreVersion(ctx context.Context, filePath string, versionID string) error {
+func (a *App) restoreVersion(ctx context.Context, filePath string, versionID string, jsonOut bool) error {
 	cfg, err := a.loadConfig()
 	if err != nil {
 		return err
@@ -671,6 +752,16 @@ func (a *App) restoreVersion(ctx context.Context, filePath string, versionID str
 	version, outcome, err := a.service(cfg).RestoreVersion(ctx, filePath, versionID)
 	if err != nil {
 		return err
+	}
+	if jsonOut {
+		return writeJSON(a.out, map[string]any{
+			"path":          filePath,
+			"source":        version,
+			"outcome":       outcome,
+			"remote_saved":  outcome.RemoteSaved,
+			"version_id":    outcome.VersionID,
+			"conflict_path": outcome.ConflictPath,
+		})
 	}
 	msg := outcome.Message
 	if msg == "" {
@@ -686,18 +777,24 @@ func (a *App) restoreVersion(ctx context.Context, filePath string, versionID str
 }
 
 func (a *App) deletePath(ctx context.Context, args []string, jsonOut bool) error {
-	deleteFS := flag.NewFlagSet("delete", flag.ContinueOnError)
-	deleteFS.SetOutput(a.errOut)
-	yes := deleteFS.Bool("yes", false, "skip confirmation")
-	if err := deleteFS.Parse(args); err != nil {
-		return errs.Wrap(errs.CodeUsage, "parse delete flags", err)
+	yes := false
+	rest := make([]string, 0, len(args))
+	for _, arg := range args {
+		switch arg {
+		case "--yes":
+			yes = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return errs.Wrap(errs.CodeUsage, "unknown delete flag: "+arg, nil)
+			}
+			rest = append(rest, arg)
+		}
 	}
-	rest := deleteFS.Args()
 	if len(rest) != 1 {
 		return errs.Wrap(errs.CodeUsage, "usage: pb delete <path> [--yes]", nil)
 	}
 	filePath := rest[0]
-	if !*yes {
+	if !yes {
 		fmt.Fprintf(a.out, "Delete %s? [y/N]: ", filePath)
 		var answer string
 		if _, err := fmt.Fscanln(a.in, &answer); err != nil && !errors.Is(err, io.EOF) {
@@ -723,13 +820,19 @@ func (a *App) deletePath(ctx context.Context, args []string, jsonOut bool) error
 }
 
 func (a *App) listPaths(ctx context.Context, args []string, jsonOut bool) error {
-	listFS := flag.NewFlagSet("list", flag.ContinueOnError)
-	listFS.SetOutput(a.errOut)
-	refresh := listFS.Bool("refresh", false, "refresh from GitHub before listing")
-	if err := listFS.Parse(args); err != nil {
-		return errs.Wrap(errs.CodeUsage, "parse list flags", err)
+	refresh := false
+	rest := make([]string, 0, len(args))
+	for _, arg := range args {
+		switch arg {
+		case "--refresh":
+			refresh = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return errs.Wrap(errs.CodeUsage, "unknown list flag: "+arg, nil)
+			}
+			rest = append(rest, arg)
+		}
 	}
-	rest := listFS.Args()
 	prefix := ""
 	if len(rest) > 1 {
 		return errs.Wrap(errs.CodeUsage, "usage: pb list [prefix] [--refresh]", nil)
@@ -742,7 +845,7 @@ func (a *App) listPaths(ctx context.Context, args []string, jsonOut bool) error 
 		return err
 	}
 	svc := a.service(cfg)
-	if *refresh {
+	if refresh {
 		if _, err := svc.Sync(ctx); err != nil {
 			return err
 		}

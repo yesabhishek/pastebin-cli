@@ -1,0 +1,7 @@
+src/**
+dist/test/**
+node_modules/**
+*.vsix
+tsconfig.json
+bin/**
+new.md

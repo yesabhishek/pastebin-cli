@@ -82,6 +82,7 @@ pb version
 pb new <path>
 pb edit <path>
 pb read <path> [--out <file>]
+pb save <path> --stdin
 pb paste <path>
 pb copy <path>
 pb versions <path>
@@ -98,7 +99,7 @@ pb logout
 Global flags:
 
 - `--repo <name>`: override the default GitHub storage repo
-- `--json`: emit JSON for `read`, `versions`, `show`, `list`, and `status`
+- `--json`: emit JSON for `read`, `save`, `versions`, `show`, `restore`, `delete`, `list`, `sync`, and `status`
 
 ## Images And Clipboard
 
