@@ -444,6 +444,36 @@ func (a *App) loadConfig() (*model.Config, error) {
 	if cfg == nil {
 		return nil, errs.Wrap(errs.CodeUsage, "run `pb init` first", nil)
 	}
+
+	// Auto-detect if active GitHub account has switched on network operations
+	var isNetworkCommand bool
+	if len(os.Args) > 1 {
+		cmd := os.Args[1]
+		switch cmd {
+		case "sync", "status", "save", "delete", "read", "paste", "copy", "versions", "show", "restore":
+			isNetworkCommand = true
+		case "list":
+			for _, arg := range os.Args {
+				if arg == "--refresh" {
+					isNetworkCommand = true
+					break
+				}
+			}
+		}
+	}
+
+	if isNetworkCommand {
+		// Verify currently logged in user via a quick 1.5s timeout context
+		checkCtx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		info, err := a.auth.Info(checkCtx)
+		cancel()
+		if err == nil && info != nil && info.Login != "" && info.Login != cfg.Login {
+			cfg.Login = info.Login
+			cfg.Owner = info.Login
+			_ = config.Save(a.paths, cfg)
+		}
+	}
+
 	a.paths = a.paths.Scope(cfg.Owner, cfg.Repo)
 	if err := config.EnsureLayout(a.paths); err != nil {
 		return nil, err
