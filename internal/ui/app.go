@@ -429,6 +429,10 @@ func (a *App) initConfig(ctx context.Context, repoOverride string) (*model.Confi
 	if err := config.Save(a.paths, cfg); err != nil {
 		return nil, err
 	}
+	a.paths = a.paths.Scope(cfg.Owner, cfg.Repo)
+	if err := config.EnsureLayout(a.paths); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -439,6 +443,10 @@ func (a *App) loadConfig() (*model.Config, error) {
 	}
 	if cfg == nil {
 		return nil, errs.Wrap(errs.CodeUsage, "run `pb init` first", nil)
+	}
+	a.paths = a.paths.Scope(cfg.Owner, cfg.Repo)
+	if err := config.EnsureLayout(a.paths); err != nil {
+		return nil, err
 	}
 	return cfg, nil
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/yesabhishek/pastebin-cli/internal/errs"
 	"github.com/yesabhishek/pastebin-cli/internal/model"
@@ -98,4 +99,36 @@ func NewDeviceID() (string, error) {
 		return "", errs.Wrap(errs.CodeLocalCorruption, "create device id", err)
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+func (p Paths) Scope(owner, repo string) Paths {
+	if owner == "" || repo == "" {
+		return p
+	}
+	safeOwner := sanitizeDirName(owner)
+	safeRepo := sanitizeDirName(repo)
+	accountDir := filepath.Join(p.RootDir, "accounts", safeOwner, safeRepo)
+	return Paths{
+		RootDir:     p.RootDir,
+		ConfigPath:  p.ConfigPath,
+		StatePath:   filepath.Join(accountDir, "state", "index.json"),
+		JournalPath: filepath.Join(accountDir, "state", "journal.json"),
+		CacheDir:    filepath.Join(accountDir, "cache", "files"),
+		RecoveryDir: filepath.Join(accountDir, "state", "recovery"),
+	}
+}
+
+func sanitizeDirName(s string) string {
+	r := strings.NewReplacer(
+		"/", "_",
+		"\\", "_",
+		":", "_",
+		"*", "_",
+		"?", "_",
+		"\"", "_",
+		"<", "_",
+		">", "_",
+		"|", "_",
+	)
+	return r.Replace(s)
 }

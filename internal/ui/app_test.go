@@ -41,6 +41,10 @@ func TestListCommandPrintsTrackedFiles(t *testing.T) {
 	if err := config.Save(app.paths, cfg); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
+	app.paths = app.paths.Scope(cfg.Owner, cfg.Repo)
+	if err := config.EnsureLayout(app.paths); err != nil {
+		t.Fatalf("ensure layout: %v", err)
+	}
 	cacheMgr := cache.New(app.paths)
 	state := &model.State{
 		Version: model.StateVersion,
@@ -386,6 +390,10 @@ func newClipboardTestApp(t *testing.T) (*App, *fakeRemoteStore, *bytes.Buffer) {
 	if err := config.Save(app.paths, cfg); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
+	app.paths = app.paths.Scope(cfg.Owner, cfg.Repo)
+	if err := config.EnsureLayout(app.paths); err != nil {
+		t.Fatalf("ensure layout: %v", err)
+	}
 	fakeRemote := newFakeRemoteStore()
 	app.remoteStore = func(*model.Config) store.RemoteStore {
 		return fakeRemote
@@ -561,4 +569,104 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func TestAccountSwitchingIsolatesState(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("HOME", configHome)
+
+	app, err := NewApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+
+	// 1. Setup tester1
+	cfg1 := &model.Config{
+		Owner:    "tester1",
+		Repo:     "pb-store",
+		Login:    "tester1",
+		DeviceID: "device1",
+	}
+	if err := config.Save(app.paths, cfg1); err != nil {
+		t.Fatalf("save config 1: %v", err)
+	}
+	// Scope app paths for tester1 to prepare state
+	paths1 := app.paths.Scope(cfg1.Owner, cfg1.Repo)
+	if err := config.EnsureLayout(paths1); err != nil {
+		t.Fatalf("ensure layout 1: %v", err)
+	}
+	cacheMgr1 := cache.New(paths1)
+	state1 := &model.State{
+		Version: model.StateVersion,
+		Files: map[string]*model.TrackedFile{
+			"notes/one.txt": {Path: "notes/one.txt"},
+		},
+	}
+	if err := cacheMgr1.SaveState(state1); err != nil {
+		t.Fatalf("save state 1: %v", err)
+	}
+
+	// 2. Setup tester2
+	cfg2 := &model.Config{
+		Owner:    "tester2",
+		Repo:     "pb-store",
+		Login:    "tester2",
+		DeviceID: "device2",
+	}
+	if err := config.Save(app.paths, cfg2); err != nil {
+		t.Fatalf("save config 2: %v", err)
+	}
+	// Scope app paths for tester2 to prepare state
+	paths2 := app.paths.Scope(cfg2.Owner, cfg2.Repo)
+	if err := config.EnsureLayout(paths2); err != nil {
+		t.Fatalf("ensure layout 2: %v", err)
+	}
+	cacheMgr2 := cache.New(paths2)
+	state2 := &model.State{
+		Version: model.StateVersion,
+		Files: map[string]*model.TrackedFile{
+			"notes/two.txt": {Path: "notes/two.txt"},
+		},
+	}
+	if err := cacheMgr2.SaveState(state2); err != nil {
+		t.Fatalf("save state 2: %v", err)
+	}
+
+	// 3. Test list for tester2 (since config currently has tester2 saved)
+	{
+		out := &bytes.Buffer{}
+		app.out = out
+		app.paths = app.paths.Scope("", "") // reset to base paths before run so loadConfig scopes it
+		if err := app.Run(context.Background(), []string{"list"}); err != nil {
+			t.Fatalf("run list tester2: %v", err)
+		}
+		got := out.String()
+		if !strings.Contains(got, "notes/two.txt") {
+			t.Fatalf("expected tester2 list output to contain notes/two.txt, got %q", got)
+		}
+		if strings.Contains(got, "notes/one.txt") {
+			t.Fatalf("did not expect tester2 list to contain tester1 notes, got %q", got)
+		}
+	}
+
+	// 4. Switch back to tester1 and run list
+	if err := config.Save(app.paths, cfg1); err != nil {
+		t.Fatalf("save config 1: %v", err)
+	}
+	{
+		out := &bytes.Buffer{}
+		app.out = out
+		app.paths = app.paths.Scope("", "") // reset to base paths before run so loadConfig scopes it
+		if err := app.Run(context.Background(), []string{"list"}); err != nil {
+			t.Fatalf("run list tester1: %v", err)
+		}
+		got := out.String()
+		if !strings.Contains(got, "notes/one.txt") {
+			t.Fatalf("expected tester1 list output to contain notes/one.txt, got %q", got)
+		}
+		if strings.Contains(got, "notes/two.txt") {
+			t.Fatalf("did not expect tester1 list to contain tester2 notes, got %q", got)
+		}
+	}
 }
