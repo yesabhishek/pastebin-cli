@@ -3,9 +3,17 @@ import { StatusReport, TrackedFile } from "./pbClient";
 export type SidebarMode = "loading" | "uninitialized" | "ready" | "error" | "missing-cli" | "outdated-cli";
 
 export interface AccountInfo {
+  id: string;
+  provider: string;
   login: string;
   repo: string;
   unlocked: boolean;
+}
+
+export const PROVIDER_LABELS: Record<string, string> = { github: "GitHub", gitlab: "GitLab", bitbucket: "Bitbucket" };
+
+export function providerLabel(provider: string | undefined): string {
+  return PROVIDER_LABELS[provider ?? "github"] ?? "GitHub";
 }
 
 export interface PageNode {
@@ -37,7 +45,7 @@ export interface SidebarState {
 const DATE_PREFIX = /^(\d{4})-(\d{2})-(\d{2})(?:-(\d{2})(\d{2}))?-?/;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-/** Notion-style page title from a file path: "notes/2026-11-22-0930-team-sync.md" -> "Team sync". */
+/** Human-friendly page title from a file path: "notes/2026-11-22-0930-team-sync.md" -> "Team sync". */
 export function displayTitle(path: string): { title: string; subtitle?: string } {
   const file = path.split("/").pop() ?? path;
   let stem = file.replace(/\.(md|markdown|txt)$/i, "");
@@ -152,7 +160,13 @@ export function createReadyState(files: TrackedFile[], status: StatusReport, sho
   const live = files.filter((f) => !f.deleted);
   return {
     mode: "ready",
-    account: { login: status.login, repo: status.repo, unlocked: status.unlocked ?? false },
+    account: {
+      id: status.account || `github:${status.login}`,
+      provider: status.provider || "github",
+      login: status.login,
+      repo: status.repo,
+      unlocked: status.unlocked ?? false
+    },
     pages: buildTree(live, byPath),
     recent: recentPages(live, byPath),
     total: live.length,

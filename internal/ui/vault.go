@@ -32,17 +32,6 @@ const (
 	msgNotEncrypted = "this notes repo is not encrypted yet. Run `pb encrypt` to set a passphrase"
 )
 
-func (a *App) defaultBackend(cfg *model.Config) store.Backend {
-	login := cfg.Login
-	return store.NewGitHubBackend(cfg.Owner, cfg.Repo, func(ctx context.Context) (string, error) {
-		return a.auth.Token(ctx, login)
-	})
-}
-
-func (a *App) keyAccount(cfg *model.Config) string {
-	return keystore.Account(cfg.Owner, cfg.Repo)
-}
-
 // cachedKeys returns keys from process memory or the device keystore.
 func (a *App) cachedKeys(cfg *model.Config) (*vault.Keys, error) {
 	account := a.keyAccount(cfg)
@@ -318,6 +307,8 @@ func (a *App) cmdPassphrase(ctx context.Context, args []string) error {
 }
 
 type vaultStatus struct {
+	Provider    string `json:"provider"`
+	ID          string `json:"id"`
 	Account     string `json:"account"`
 	Repo        string `json:"repo"`
 	Encrypted   bool   `json:"encrypted"`
@@ -333,7 +324,7 @@ func (a *App) vaultStatus(ctx context.Context, cfg *model.Config) (*vaultStatus,
 	if err != nil {
 		return nil, err
 	}
-	st := &vaultStatus{Account: cfg.Login, Repo: cfg.Owner + "/" + cfg.Repo, Encrypted: file != nil, Keystore: a.keys.Kind()}
+	st := &vaultStatus{Provider: providerName(cfg.Provider), ID: AccountID(cfg.Provider, cfg.Login), Account: cfg.Login, Repo: cfg.Owner + "/" + cfg.Repo, Encrypted: file != nil, Keystore: a.keys.Kind()}
 	if k, err := a.cachedKeys(cfg); err == nil && file != nil && k.VaultID == file.ID {
 		st.Unlocked = true
 	}
@@ -368,7 +359,7 @@ func (a *App) cmdVault(ctx context.Context) error {
 	if a.jsonOut {
 		return writeJSON(a.out, st)
 	}
-	fmt.Fprintf(a.out, "Account:    @%s\nRepo:       %s\nEncrypted:  %t\nUnlocked:   %t\nKey store:  %s\n", st.Account, st.Repo, st.Encrypted, st.Unlocked, st.Keystore)
+	fmt.Fprintf(a.out, "Account:    %s\nRepo:       %s (%s)\nEncrypted:  %t\nUnlocked:   %t\nKey store:  %s\n", st.ID, st.Repo, cfgHost(cfg), st.Encrypted, st.Unlocked, st.Keystore)
 	if st.LegacyFiles > 0 {
 		fmt.Fprintf(a.out, "Plaintext:  %d legacy note(s) - run `pb encrypt`\n", st.LegacyFiles)
 	}
@@ -396,86 +387,167 @@ func (a *App) parseSecretFlags(cmd string, args []string) error {
 
 type accountView struct {
 	Current  string         `json:"current"`
+	Provider string         `json:"provider"`
 	Repo     string         `json:"repo"`
 	Accounts []auth.Account `json:"accounts"`
 }
 
+// allAccounts merges GitHub CLI accounts with GitLab/Bitbucket logins.
+func (a *App) allAccounts(ctx context.Context, cfg *model.Config) []auth.Account {
+	accounts := []auth.Account{}
+	if gh, err := a.auth.Accounts(ctx); err == nil {
+		accounts = append(accounts, gh...)
+	}
+	return append(accounts, a.storedAccounts(cfg)...)
+}
+
 func (a *App) cmdAccount(ctx context.Context, args []string) error {
-	if len(args) >= 1 && args[0] == "switch" {
+	if len(args) >= 1 && (args[0] == "switch" || args[0] == "remove") {
+		sub := args[0]
+		owner := ""
 		rest := []string{}
-		for _, arg := range args[1:] {
-			if arg == "--stdin" {
+		for i := 1; i < len(args); i++ {
+			switch {
+			case args[i] == "--stdin":
 				a.secretFromStdin = true
-				continue
+			case (args[i] == "--owner" || args[i] == "--workspace" || args[i] == "--group") && i+1 < len(args):
+				owner = args[i+1]
+				i++
+			case strings.HasPrefix(args[i], "--owner="):
+				owner = strings.TrimPrefix(args[i], "--owner=")
+			default:
+				rest = append(rest, args[i])
 			}
-			rest = append(rest, arg)
 		}
 		if len(rest) != 1 {
-			return errs.Wrap(errs.CodeUsage, "usage: pb account switch <github-login> [--stdin]", nil)
+			return errs.Wrap(errs.CodeUsage, "usage: pb account "+sub+" <provider:login> [--owner <group-or-workspace>]", nil)
 		}
-		return a.switchAccount(ctx, strings.TrimPrefix(rest[0], "@"))
+		if sub == "remove" {
+			return a.removeAccount(rest[0])
+		}
+		return a.switchAccount(ctx, rest[0], owner)
 	}
 	if len(args) != 0 {
-		return errs.Wrap(errs.CodeUsage, "usage: pb account [switch <github-login>]", nil)
+		return errs.Wrap(errs.CodeUsage, "usage: pb account [switch <provider:login> | remove <provider:login>]", nil)
 	}
 	cfg, err := config.Load(a.paths)
 	if err != nil {
 		return err
 	}
-	accounts, err := a.auth.Accounts(ctx)
-	if err != nil {
-		return err
-	}
-	view := accountView{Accounts: accounts}
-	if cfg != nil {
-		view.Current = cfg.Login
+	view := accountView{Accounts: a.allAccounts(ctx, cfg)}
+	if cfg != nil && cfg.Owner != "" {
+		view.Current = AccountID(cfg.Provider, cfg.Login)
+		view.Provider = providerName(cfg.Provider)
 		view.Repo = cfg.Owner + "/" + cfg.Repo
 	}
 	if a.jsonOut {
 		return writeJSON(a.out, view)
 	}
 	if view.Current != "" {
-		fmt.Fprintf(a.out, "Syncing as @%s -> %s\n\n", view.Current, view.Repo)
+		fmt.Fprintf(a.out, "Syncing as %s -> %s on %s\n\n", view.Current, view.Repo, cfgHost(cfg))
 	} else {
-		fmt.Fprintln(a.out, "pb is not initialized yet. Run `pb init`.")
+		fmt.Fprintln(a.out, "pb is not set up yet. Run `pb init` (GitHub) or `pb login gitlab|bitbucket`.")
 	}
-	fmt.Fprintln(a.out, "GitHub accounts available:")
-	for _, acc := range accounts {
+	if len(view.Accounts) == 0 {
+		fmt.Fprintln(a.out, "No accounts yet. Sign in with `gh auth login`, `pb login gitlab` or `pb login bitbucket`.")
+		return nil
+	}
+	fmt.Fprintln(a.out, "Accounts:")
+	for _, acc := range view.Accounts {
 		marker := "  "
-		if acc.Login == view.Current {
+		if acc.ID == view.Current {
 			marker = "* "
 		}
 		note := ""
 		if !acc.OK {
-			note = " (session expired - run `gh auth login`)"
+			note = " (signed out - sign in again)"
 		}
-		fmt.Fprintf(a.out, "%s@%s%s\n", marker, acc.Login, note)
+		fmt.Fprintf(a.out, "%s%-32s %s%s\n", marker, acc.ID, acc.Host, note)
 	}
-	fmt.Fprintln(a.out, "\nSwitch with: pb account switch <login>   Add one with: gh auth login")
+	fmt.Fprintln(a.out, "\nSwitch with: pb account switch <provider:login>")
 	return nil
 }
 
-func (a *App) switchAccount(ctx context.Context, login string) error {
-	if !auth.ValidLogin(login) {
-		return errs.Wrap(errs.CodeUsage, "invalid GitHub login: "+login, nil)
-	}
-	accounts, err := a.auth.Accounts(ctx)
+func (a *App) removeAccount(id string) error {
+	provider, login := parseAccountID(id)
+	cfg, err := config.Load(a.paths)
 	if err != nil {
 		return err
 	}
-	found := false
-	for _, acc := range accounts {
-		if strings.EqualFold(acc.Login, login) {
-			login = acc.Login
-			found = true
-		}
+	if cfg == nil {
+		return errs.Wrap(errs.CodeUsage, "no accounts to remove", nil)
 	}
-	if !found {
-		return errs.Wrap(errs.CodeAuth, "GitHub CLI is not signed in as @"+login+". Run `gh auth login` first.", nil)
+	if provider == model.ProviderGitHub {
+		return errs.Wrap(errs.CodeUsage, "GitHub accounts are managed by the GitHub CLI: run `gh auth logout --user "+login+"`", nil)
+	}
+	if AccountID(cfg.Provider, cfg.Login) == AccountID(provider, login) && cfg.Owner != "" {
+		return errs.Wrap(errs.CodeUsage, "switch to another account before removing the one you sync with", nil)
+	}
+	kept := cfg.Logins[:0]
+	removed := false
+	for _, l := range cfg.Logins {
+		if providerName(l.Provider) == provider && strings.EqualFold(l.Login, login) {
+			_ = a.keys.Delete(credentialKey(l.Provider, l.Host, l.Login))
+			removed = true
+			continue
+		}
+		kept = append(kept, l)
+	}
+	if !removed {
+		return errs.Wrap(errs.CodeNotFound, "no stored login "+id, nil)
+	}
+	cfg.Logins = kept
+	if err := config.Save(a.paths, cfg); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.out, "Removed %s and its token from this device.\n", AccountID(provider, login))
+	return nil
+}
+
+func (a *App) switchAccount(ctx context.Context, id, owner string) error {
+	provider, login := parseAccountID(id)
+	if provider == "" || !accountNamePattern.MatchString(login) {
+		return errs.Wrap(errs.CodeUsage, "invalid account: "+id+" (use provider:login, e.g. gitlab:alice)", nil)
 	}
 	cfg, err := config.Load(a.paths)
 	if err != nil {
 		return err
+	}
+	host := defaultHost(provider)
+	switch provider {
+	case model.ProviderGitHub:
+		accounts, err := a.auth.Accounts(ctx)
+		if err != nil {
+			return err
+		}
+		found := false
+		for _, acc := range accounts {
+			if strings.EqualFold(acc.Login, login) {
+				login = acc.Login
+				found = true
+			}
+		}
+		if !found {
+			return errs.Wrap(errs.CodeAuth, "GitHub CLI is not signed in as @"+login+". Run `gh auth login` first.", nil)
+		}
+	default:
+		found := false
+		if cfg != nil {
+			for _, l := range cfg.Logins {
+				if providerName(l.Provider) == provider && strings.EqualFold(l.Login, login) {
+					login, host, found = l.Login, l.Host, true
+				}
+			}
+		}
+		if !found {
+			return errs.Wrap(errs.CodeAuth, "not signed in to "+providerLabel(provider)+" as @"+login+". Run `pb login "+provider+"` first.", nil)
+		}
+	}
+	if owner == "" {
+		owner = login
+	}
+	if !validOwner(provider, owner) {
+		return errs.Wrap(errs.CodeUsage, "invalid owner/workspace: "+owner, nil)
 	}
 	if cfg == nil {
 		deviceID, err := config.NewDeviceID()
@@ -484,12 +556,17 @@ func (a *App) switchAccount(ctx context.Context, login string) error {
 		}
 		cfg = &model.Config{Repo: config.DefaultRepo(), DeviceID: deviceID, UpgradePolicy: model.UpgradePolicyPrompt}
 	}
+	cfg.Provider = provider
+	cfg.Host = host
+	if provider == model.ProviderGitHub {
+		cfg.Host = ""
+	}
 	cfg.Login = login
-	cfg.Owner = login
+	cfg.Owner = owner
 	if err := config.Save(a.paths, cfg); err != nil {
 		return err
 	}
-	a.paths = a.paths.Scope(cfg.Owner, cfg.Repo)
+	a.paths = a.scopePaths(cfg)
 	if err := config.EnsureLayout(a.paths); err != nil {
 		return err
 	}
@@ -509,7 +586,7 @@ func (a *App) switchAccount(ctx context.Context, login string) error {
 	if a.jsonOut {
 		return writeJSON(a.out, st)
 	}
-	fmt.Fprintf(a.out, "Now syncing as @%s -> %s\n", cfg.Login, st.Repo)
+	fmt.Fprintf(a.out, "Now syncing as %s -> %s\n", AccountID(provider, login), st.Repo)
 	if st.Needs == "unlock" {
 		fmt.Fprintln(a.out, "Run `pb unlock` to unlock this account's vault.")
 	} else if st.Needs == "encrypt" {
@@ -653,7 +730,14 @@ func (a *App) forgetAllKeys() {
 	for _, owner := range owners {
 		repos, _ := os.ReadDir(filepath.Join(accountsDir, owner.Name()))
 		for _, repo := range repos {
-			names = append(names, keystore.Account(owner.Name(), repo.Name()))
+			ownerDir := owner.Name()
+			if at, tilde := strings.Index(ownerDir, "@"), strings.Index(ownerDir, "~"); at > 0 && tilde > at {
+				// provider@host~owner (GitLab/Bitbucket scopes)
+				names = append(names, ownerDir[:at]+":"+strings.ToLower(ownerDir[at+1:tilde])+":"+
+					keystore.Account(strings.ReplaceAll(ownerDir[tilde+1:], "~", "/"), repo.Name()))
+				continue
+			}
+			names = append(names, keystore.Account(ownerDir, repo.Name()))
 		}
 	}
 	if cfg, err := config.Load(a.paths); err == nil && cfg != nil {

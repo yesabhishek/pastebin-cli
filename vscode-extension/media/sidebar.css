@@ -217,6 +217,7 @@ body.sidebar {
 .menu .row.danger { color: var(--pb-red); }
 .menu .sep { height: 1px; margin: 4px 6px; background: var(--pb-border); }
 .menu .hdr { padding: 4px 8px 6px; font-size: 12px; color: var(--pb-faint); }
-.menu .check { margin-left: auto; color: var(--pb-accent); }
+.menu .check { margin-left: 6px; color: var(--pb-accent); }
+.menu .sub { margin-left: auto; font-size: 11px; color: var(--pb-faint); }
 
 .hidden { display: none !important; }

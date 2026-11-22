@@ -177,8 +177,24 @@ test("switchAccount rejects suspicious logins before spawning pb", async () => {
     return "{}";
   });
   await assert.rejects(() => client.switchAccount("--repo=evil"));
-  await assert.rejects(() => client.switchAccount("a b"));
+  await assert.rejects(() => client.switchAccount("github:a b"));
+  await assert.rejects(() => client.switchAccount("svn:alice"));
+  await assert.rejects(() => client.login("gitlab", "t", { host: "evil.com/x" }));
   assert.equal(spawned, false);
+});
+
+test("switchAccount and login use provider ids and stdin tokens", async () => {
+  const calls: Array<{ args: string[]; stdin?: string }> = [];
+  const client = new PBClient(() => "pb", async (args, stdin) => {
+    calls.push({ args, stdin });
+    return JSON.stringify({ id: "gitlab:alice", provider: "gitlab", host: "gitlab.com", login: "alice" });
+  });
+  await client.switchAccount("gitlab:alice");
+  assert.deepEqual(calls[0].args, ["--json", "account", "switch", "gitlab:alice"]);
+  await client.login("bitbucket", "secret-token-xyz", { email: "me@example.com" });
+  assert.deepEqual(calls[1].args, ["--json", "login", "bitbucket", "--stdin", "--email", "me@example.com"]);
+  assert.equal(calls[1].stdin, "secret-token-xyz\n");
+  assert.ok(!calls[1].args.some((a) => a.includes("secret-token")), "token leaked into argv");
 });
 
 test("locked and not-encrypted errors are classified", () => {
