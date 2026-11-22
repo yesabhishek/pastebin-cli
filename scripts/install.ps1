@@ -26,6 +26,13 @@ New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 try {
     $zipPath = Join-Path $tmp $asset
     Invoke-WebRequest -Uri $url -OutFile $zipPath
+    $sumsPath = Join-Path $tmp "SHA256SUMS"
+    Invoke-WebRequest -Uri "https://github.com/$OwnerRepo/releases/download/$($release.tag_name)/SHA256SUMS" -OutFile $sumsPath
+    $expected = (Get-Content $sumsPath | Where-Object { ($_ -split '\s+')[1] -eq $asset } | ForEach-Object { ($_ -split '\s+')[0] }) | Select-Object -First 1
+    $actual = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLower()
+    if (-not $expected -or $expected.ToLower() -ne $actual) {
+        throw "checksum verification failed for $asset; refusing to install"
+    }
     Expand-Archive -Path $zipPath -DestinationPath $tmp -Force
     Copy-Item -Path (Join-Path $tmp $Name) -Destination (Join-Path $BinDir $Name) -Force
     Write-Host "Installed $Name to $(Join-Path $BinDir $Name)"

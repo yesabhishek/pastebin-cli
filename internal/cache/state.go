@@ -74,7 +74,7 @@ func (m *Manager) SaveContent(path string, content []byte) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	target := m.contentPath(path)
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return "", errs.Wrap(errs.CodeLocalCorruption, "create cache dir", err)
 	}
 	if err := atomicWrite(target, content, 0o600); err != nil {
@@ -211,7 +211,7 @@ func (m *Manager) saveJournalUnlocked(journal *model.Journal) error {
 }
 
 func atomicWrite(path string, data []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return errs.Wrap(errs.CodeLocalCorruption, "create parent directory", err)
 	}
 	tmp := path + ".tmp"

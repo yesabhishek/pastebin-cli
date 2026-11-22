@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { PBClient, PBError, classifyJSONParseError, classifyPBError } from "../pbClient";
 
-test("init calls pb init without JSON", async () => {
+test("init connects storage without prompting for a passphrase", async () => {
   const calls: string[][] = [];
   const client = new PBClient(
     () => "pb",
@@ -13,7 +13,7 @@ test("init calls pb init without JSON", async () => {
   );
 
   await client.init();
-  assert.deepEqual(calls[0], ["init"]);
+  assert.deepEqual(calls[0], ["init", "--no-vault"]);
 });
 
 test("save sends stdin content and JSON flag", async () => {
@@ -140,4 +140,53 @@ test("save unsupported CLI errors are actionable", async () => {
     async () => await client.save("notes/a.md", "hello"),
     (err) => err instanceof PBError && err.code === "unsupported-cli" && err.message.includes("Update pb CLI")
   );
+});
+
+test("passphrases are sent on stdin, never as arguments", async () => {
+  const calls: Array<{ args: string[]; stdin?: string }> = [];
+  const client = new PBClient(() => "pb", async (args, stdin) => {
+    calls.push({ args, stdin });
+    return "{}";
+  });
+  await client.unlock("hunter2 hunter2");
+  await client.encrypt("correct horse battery");
+  await client.changePassphrase("old passphrase", "new passphrase!");
+  for (const call of calls) {
+    assert.ok(!call.args.some((a) => a.includes("hunter2") || a.includes("horse") || a.includes("passphrase!")), "secret leaked into argv");
+    assert.ok(call.args.includes("--stdin"));
+  }
+  assert.equal(calls[0].stdin, "hunter2 hunter2\n");
+  assert.equal(calls[2].stdin, "old passphrase\nnew passphrase!\n");
+});
+
+test("quick note sends content on stdin", async () => {
+  const calls: Array<{ args: string[]; stdin?: string }> = [];
+  const client = new PBClient(() => "pb", async (args, stdin) => {
+    calls.push({ args, stdin });
+    return JSON.stringify({ path: "notes/x.md", remote_saved: true, message: "ok" });
+  });
+  await client.quickNote("# Secret title\n\nbody\n");
+  assert.deepEqual(calls[0].args, ["--json", "note", "--stdin"]);
+  assert.equal(calls[0].stdin, "# Secret title\n\nbody\n");
+});
+
+test("switchAccount rejects suspicious logins before spawning pb", async () => {
+  let spawned = false;
+  const client = new PBClient(() => "pb", async () => {
+    spawned = true;
+    return "{}";
+  });
+  await assert.rejects(() => client.switchAccount("--repo=evil"));
+  await assert.rejects(() => client.switchAccount("a b"));
+  assert.equal(spawned, false);
+});
+
+test("locked and not-encrypted errors are classified", () => {
+  assert.equal(classifyPBError("pb sync failed: vault is locked on this device. Run `pb unlock`").code, "locked");
+  assert.equal(classifyPBError("pb sync failed: this notes repo is not encrypted yet. Run `pb encrypt`").code, "not-encrypted");
+});
+
+test("JSON parse errors never echo note content", () => {
+  const err = classifyJSONParseError("super secret note body", new Error("bad"));
+  assert.ok(!err.message.includes("super secret"));
 });

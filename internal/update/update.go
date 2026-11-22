@@ -6,10 +6,14 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,6 +59,21 @@ type Manager struct {
 	now            func() time.Time
 	executablePath func() (string, error)
 	startDetached  func(name string, args ...string) error
+	allowURL       func(*url.URL) bool
+}
+
+// ChecksumAsset is the release asset listing SHA-256 sums of every archive.
+const ChecksumAsset = "SHA256SUMS"
+
+const maxDownloadBytes = 200 << 20
+
+// allowGitHubDownload only permits HTTPS downloads from GitHub-controlled hosts.
+func allowGitHubDownload(u *url.URL) bool {
+	if u.Scheme != "https" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "github.com" || host == "api.github.com" || strings.HasSuffix(host, ".githubusercontent.com")
 }
 
 func NewManager(currentVersion string) *Manager {
@@ -72,6 +91,7 @@ func NewManager(currentVersion string) *Manager {
 		startDetached: func(name string, args ...string) error {
 			return exec.Command(name, args...).Start()
 		},
+		allowURL: allowGitHubDownload,
 	}
 }
 
@@ -151,22 +171,30 @@ func (m *Manager) Install(ctx context.Context, release *Release) (*Result, error
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.URL, nil)
-	if err != nil {
-		return nil, errs.Wrap(errs.CodeNetwork, "build release download request", err)
+	var sums *ReleaseAsset
+	for i := range release.Assets {
+		if release.Assets[i].Name == ChecksumAsset {
+			sums = &release.Assets[i]
+		}
 	}
-	req.Header.Set("User-Agent", "pb/"+safeVersion(m.currentVersion))
-	resp, err := m.client.Do(req)
-	if err != nil {
-		return nil, errs.Wrap(errs.CodeNetwork, "download release asset", err)
+	if sums == nil {
+		return nil, errs.Wrap(errs.CodeRemoteCorruption, "release "+release.TagName+" has no "+ChecksumAsset+"; refusing to install an unverified binary", nil)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return nil, errs.Wrap(errs.CodeNetwork, fmt.Sprintf("release asset download failed with status %d", resp.StatusCode), nil)
-	}
-	archiveData, err := io.ReadAll(resp.Body)
+	sumData, err := m.download(ctx, sums.URL, 1<<20)
 	if err != nil {
-		return nil, errs.Wrap(errs.CodeNetwork, "read release asset", err)
+		return nil, err
+	}
+	expected, err := lookupChecksum(sumData, asset.Name)
+	if err != nil {
+		return nil, err
+	}
+	archiveData, err := m.download(ctx, asset.URL, maxDownloadBytes)
+	if err != nil {
+		return nil, err
+	}
+	actual := sha256.Sum256(archiveData)
+	if subtle.ConstantTimeCompare([]byte(hex.EncodeToString(actual[:])), []byte(expected)) != 1 {
+		return nil, errs.Wrap(errs.CodeRemoteCorruption, "checksum mismatch for "+asset.Name+"; refusing to install", nil)
 	}
 	executableData, err := extractExecutable(asset.Name, archiveData)
 	if err != nil {
@@ -186,6 +214,47 @@ func (m *Manager) Install(ctx context.Context, release *Release) (*Result, error
 		return nil, err
 	}
 	return &Result{Version: release.TagName, Executable: target}, nil
+}
+
+func (m *Manager) download(ctx context.Context, rawURL string, limit int64) ([]byte, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil || !m.allowURL(u) {
+		return nil, errs.Wrap(errs.CodeRemoteCorruption, "release asset URL is not an HTTPS GitHub URL", nil)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeNetwork, "build release download request", err)
+	}
+	req.Header.Set("User-Agent", "pb/"+safeVersion(m.currentVersion))
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeNetwork, "download release asset", err)
+	}
+	defer resp.Body.Close()
+	if resp.Request != nil && resp.Request.URL != nil && !m.allowURL(resp.Request.URL) {
+		return nil, errs.Wrap(errs.CodeRemoteCorruption, "release download redirected to an untrusted host", nil)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, errs.Wrap(errs.CodeNetwork, fmt.Sprintf("release asset download failed with status %d", resp.StatusCode), nil)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeNetwork, "read release asset", err)
+	}
+	if int64(len(data)) > limit {
+		return nil, errs.Wrap(errs.CodeRemoteCorruption, "release asset is unexpectedly large", nil)
+	}
+	return data, nil
+}
+
+func lookupChecksum(sums []byte, name string) (string, error) {
+	for _, line := range strings.Split(string(sums), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == name && len(fields[0]) == 64 {
+			return strings.ToLower(fields[0]), nil
+		}
+	}
+	return "", errs.Wrap(errs.CodeRemoteCorruption, ChecksumAsset+" has no entry for "+name, nil)
 }
 
 func (m *Manager) matchAsset(release *Release) (*ReleaseAsset, error) {
@@ -289,7 +358,7 @@ func extractTarGz(archiveData []byte) ([]byte, error) {
 			return nil, errs.Wrap(errs.CodeRemoteCorruption, "read tar.gz release asset", err)
 		}
 		if hdr.FileInfo().Mode().IsRegular() && filepath.Base(hdr.Name) == "pb" {
-			data, err := io.ReadAll(tr)
+			data, err := io.ReadAll(io.LimitReader(tr, maxDownloadBytes))
 			if err != nil {
 				return nil, errs.Wrap(errs.CodeRemoteCorruption, "read executable from archive", err)
 			}
@@ -312,7 +381,7 @@ func extractZip(archiveData []byte) ([]byte, error) {
 		if err != nil {
 			return nil, errs.Wrap(errs.CodeRemoteCorruption, "open executable in zip", err)
 		}
-		data, readErr := io.ReadAll(rc)
+		data, readErr := io.ReadAll(io.LimitReader(rc, maxDownloadBytes))
 		closeErr := rc.Close()
 		if readErr != nil {
 			return nil, errs.Wrap(errs.CodeRemoteCorruption, "read executable in zip", readErr)

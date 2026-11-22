@@ -22,6 +22,12 @@ import (
 	"github.com/yesabhishek/pastebin-cli/internal/store"
 )
 
+func TestMain(m *testing.M) {
+	// Never touch the developer's real OS keychain from tests.
+	os.Setenv("PB_KEYSTORE", "file")
+	os.Exit(m.Run())
+}
+
 func TestListCommandPrintsTrackedFiles(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -106,7 +112,7 @@ func TestLogoutRemovesLocalConfig(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(app.paths.RootDir, "config.json")); !os.IsNotExist(err) {
 		t.Fatalf("expected config file to be removed, stat err=%v", err)
 	}
-	if !strings.Contains(out.String(), "Local pb state removed") {
+	if !strings.Contains(out.String(), "Local pb state and device keys removed") {
 		t.Fatalf("unexpected logout output: %q", out.String())
 	}
 }

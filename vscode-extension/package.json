@@ -1,8 +1,8 @@
 {
   "name": "pastebin-vscode",
-  "displayName": "Pastebin",
-  "description": "VS Code extension for the pb GitHub-backed scratchpad.",
-  "version": "0.0.6",
+  "displayName": "Pastebin — Encrypted Notes",
+  "description": "Notion-style, end-to-end encrypted notes for VS Code that sync through your own private GitHub repo.",
+  "version": "0.1.0",
   "publisher": "AbhishekChoudhury",
   "license": "SEE LICENSE IN LICENSE",
   "icon": "media/icon.png",
@@ -20,27 +20,21 @@
     "scratchpad",
     "github",
     "sync",
-    "clipboard"
+    "clipboard",
+    "encrypted",
+    "notion",
+    "quick note",
+    "markdown"
   ],
   "engines": {
     "vscode": "^1.90.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Notebooks"
   ],
   "activationEvents": [
-    "onView:pastebin.notesView",
-    "onCommand:pastebin.refresh",
-    "onCommand:pastebin.init",
-    "onCommand:pastebin.sync",
-    "onCommand:pastebin.newNote",
-    "onCommand:pastebin.pushCurrentNote",
-    "onCommand:pastebin.buildLocalPB",
-    "onCommand:pastebin.openNote",
-    "onCommand:pastebin.deleteNote",
-    "onCommand:pastebin.showStatus",
-    "onCommand:pastebin.configurePbPath",
-    "onCommand:pastebin.setFilter"
+    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -50,7 +44,18 @@
         "pastebin.pbPath": {
           "type": "string",
           "default": "pb",
-          "description": "Path to the pb CLI binary."
+          "scope": "machine",
+          "markdownDescription": "Path to the `pb` CLI binary. Only read from **user** settings so a workspace can't redirect it."
+        },
+        "pastebin.syncOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Sync notes in the background when VS Code starts."
+        },
+        "pastebin.autoSync": {
+          "type": "boolean",
+          "default": true,
+          "description": "Sync quietly every 10 minutes while VS Code is focused."
         }
       }
     },
@@ -66,23 +71,25 @@
     "views": {
       "pastebin": [
         {
+          "type": "webview",
           "id": "pastebin.notesView",
-          "name": "Pastebin"
+          "name": "Notes",
+          "icon": "media/activity-icon.svg"
         }
       ]
     },
     "commands": [
       {
-        "command": "pastebin.refresh",
-        "title": "Refresh",
+        "command": "pastebin.quickNote",
+        "title": "Quick Note",
         "category": "Pastebin",
-        "icon": "$(refresh)"
+        "icon": "$(zap)"
       },
       {
-        "command": "pastebin.init",
-        "title": "Initialize",
+        "command": "pastebin.newNote",
+        "title": "New Page",
         "category": "Pastebin",
-        "icon": "$(rocket)"
+        "icon": "$(add)"
       },
       {
         "command": "pastebin.sync",
@@ -91,54 +98,94 @@
         "icon": "$(sync)"
       },
       {
-        "command": "pastebin.newNote",
-        "title": "New Note",
+        "command": "pastebin.refresh",
+        "title": "Refresh",
         "category": "Pastebin",
-        "icon": "$(new-file)"
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "pastebin.searchNotes",
+        "title": "Search Pages",
+        "category": "Pastebin",
+        "icon": "$(search)"
+      },
+      {
+        "command": "pastebin.openNote",
+        "title": "Open Page",
+        "category": "Pastebin"
+      },
+      {
+        "command": "pastebin.showHistory",
+        "title": "Version History",
+        "category": "Pastebin",
+        "icon": "$(history)"
+      },
+      {
+        "command": "pastebin.deleteNote",
+        "title": "Delete Page",
+        "category": "Pastebin",
+        "icon": "$(trash)"
       },
       {
         "command": "pastebin.pushCurrentNote",
-        "title": "Push Current Note",
+        "title": "Save Current Editor to Pastebin",
         "category": "Pastebin",
         "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "pastebin.switchAccount",
+        "title": "Switch GitHub Account",
+        "category": "Pastebin",
+        "icon": "$(account)"
+      },
+      {
+        "command": "pastebin.unlock",
+        "title": "Unlock Vault",
+        "category": "Pastebin",
+        "icon": "$(unlock)"
+      },
+      {
+        "command": "pastebin.lock",
+        "title": "Lock Vault on This Device",
+        "category": "Pastebin",
+        "icon": "$(lock)"
+      },
+      {
+        "command": "pastebin.changePassphrase",
+        "title": "Change Vault Passphrase",
+        "category": "Pastebin",
+        "icon": "$(key)"
+      },
+      {
+        "command": "pastebin.init",
+        "title": "Get Started",
+        "category": "Pastebin",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "pastebin.showStatus",
+        "title": "Show Status",
+        "category": "Pastebin",
+        "icon": "$(info)"
+      },
+      {
+        "command": "pastebin.configurePbPath",
+        "title": "Configure pb Path",
+        "category": "Pastebin",
+        "icon": "$(gear)"
       },
       {
         "command": "pastebin.buildLocalPB",
         "title": "Build Local pb",
         "category": "Pastebin",
-        "icon": "$(tools)"
-      },
-      {
-        "command": "pastebin.openNote",
-        "title": "Open Note",
-        "category": "Pastebin"
-      },
-      {
-        "command": "pastebin.deleteNote",
-        "title": "Delete Note",
-        "category": "Pastebin"
-      },
-      {
-        "command": "pastebin.showStatus",
-        "title": "Show Status",
-        "category": "Pastebin"
-      },
-      {
-        "command": "pastebin.configurePbPath",
-        "title": "Configure pb Path",
-        "category": "Pastebin"
-      },
-      {
-        "command": "pastebin.setFilter",
-        "title": "Filter",
-        "category": "Pastebin",
-        "icon": "$(filter)"
+        "icon": "$(tools)",
+        "enablement": "isWorkspaceTrusted"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "pastebin.newNote",
+          "command": "pastebin.quickNote",
           "when": "view == pastebin.notesView",
           "group": "navigation@1"
         },
@@ -148,43 +195,96 @@
           "group": "navigation@2"
         },
         {
-          "command": "pastebin.refresh",
+          "command": "pastebin.switchAccount",
           "when": "view == pastebin.notesView",
           "group": "navigation@3"
         },
         {
-          "command": "pastebin.setFilter",
-          "when": "view == pastebin.notesView"
+          "command": "pastebin.refresh",
+          "when": "view == pastebin.notesView",
+          "group": "1_more@1"
+        },
+        {
+          "command": "pastebin.lock",
+          "when": "view == pastebin.notesView",
+          "group": "1_more@2"
+        },
+        {
+          "command": "pastebin.changePassphrase",
+          "when": "view == pastebin.notesView",
+          "group": "1_more@3"
+        },
+        {
+          "command": "pastebin.configurePbPath",
+          "when": "view == pastebin.notesView",
+          "group": "2_setup@1"
         }
       ],
       "editor/title": [
         {
-          "command": "pastebin.pushCurrentNote",
-          "when": "resourceScheme == untitled || resourceScheme == file || resourceScheme == pb-note",
+          "command": "pastebin.showHistory",
+          "when": "resourceScheme == pb-note",
           "group": "navigation@1"
-        }
-      ],
-      "view/item/context": [
-        {
-          "command": "pastebin.openNote",
-          "when": "view == pastebin.notesView && viewItem == pastebinNote",
-          "group": "inline"
         },
         {
-          "command": "pastebin.deleteNote",
-          "when": "view == pastebin.notesView && viewItem == pastebinNote",
-          "group": "inline@2"
+          "command": "pastebin.pushCurrentNote",
+          "when": "resourceScheme == untitled || resourceScheme == file",
+          "group": "navigation@9"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "pastebin.openNote",
+          "when": "false"
+        },
+        {
+          "command": "pastebin.showHistory",
+          "when": "resourceScheme == pb-note"
         }
       ]
-    }
+    },
+    "keybindings": [
+      {
+        "command": "pastebin.quickNote",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p"
+      },
+      {
+        "command": "pastebin.searchNotes",
+        "key": "ctrl+alt+o",
+        "mac": "cmd+alt+o"
+      },
+      {
+        "command": "pastebin.showHistory",
+        "key": "ctrl+alt+h",
+        "mac": "cmd+alt+h",
+        "when": "resourceScheme == pb-note"
+      }
+    ]
   },
   "scripts": {
     "build": "tsc -p .",
-    "test": "npm run build && node --test dist/test/**/*.test.js"
+    "test": "npm run build && node --test dist/test/**/*.test.js",
+    "vscode:prepublish": "npm run build",
+    "package": "vsce package"
   },
   "devDependencies": {
     "@types/node": "^22.15.29",
     "@types/vscode": "^1.90.0",
     "typescript": "^5.8.3"
+  },
+  "galleryBanner": {
+    "color": "#191919",
+    "theme": "dark"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Building pb from source is disabled in untrusted workspaces. The pb path is only read from user settings.",
+      "restrictedConfigurations": [
+        "pastebin.pbPath"
+      ]
+    },
+    "virtualWorkspaces": true
   }
 }

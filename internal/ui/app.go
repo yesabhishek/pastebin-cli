@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	pathpkg "path"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,11 +20,13 @@ import (
 	"github.com/yesabhishek/pastebin-cli/internal/config"
 	"github.com/yesabhishek/pastebin-cli/internal/editor"
 	"github.com/yesabhishek/pastebin-cli/internal/errs"
+	"github.com/yesabhishek/pastebin-cli/internal/keystore"
 	"github.com/yesabhishek/pastebin-cli/internal/media"
 	"github.com/yesabhishek/pastebin-cli/internal/model"
 	"github.com/yesabhishek/pastebin-cli/internal/store"
 	syncer "github.com/yesabhishek/pastebin-cli/internal/sync"
 	"github.com/yesabhishek/pastebin-cli/internal/update"
+	"github.com/yesabhishek/pastebin-cli/internal/vault"
 	"github.com/yesabhishek/pastebin-cli/internal/version"
 )
 
@@ -36,6 +41,13 @@ type App struct {
 	clipboard   media.Clipboard
 	viewer      media.Viewer
 	remoteStore func(*model.Config) store.RemoteStore
+	backendFor  func(*model.Config) store.Backend
+	keys        keystore.Store
+	unlocked    map[string]*vault.Keys
+	jsonOut     bool
+
+	secretFromStdin bool
+	stdinReader     *bufio.Reader
 }
 
 func NewApp(in io.Reader, out, errOut io.Writer) (*App, error) {
@@ -46,7 +58,7 @@ func NewApp(in io.Reader, out, errOut io.Writer) (*App, error) {
 	if err := config.EnsureLayout(paths); err != nil {
 		return nil, err
 	}
-	return &App{
+	app := &App{
 		in:          in,
 		out:         out,
 		errOut:      errOut,
@@ -56,10 +68,15 @@ func NewApp(in io.Reader, out, errOut io.Writer) (*App, error) {
 		interactive: isInteractive(in, out),
 		clipboard:   media.SystemClipboard{},
 		viewer:      media.SystemViewer{},
-		remoteStore: func(cfg *model.Config) store.RemoteStore {
-			return store.NewGitHub(cfg.Owner, cfg.Repo)
-		},
-	}, nil
+		keys:        keystore.New(paths.RootDir),
+		unlocked:    map[string]*vault.Keys{},
+	}
+	app.backendFor = app.defaultBackend
+	app.remoteStore = func(cfg *model.Config) store.RemoteStore {
+		return store.NewEncrypted(app.backendFor(cfg), app.keyProvider(cfg))
+	}
+	cleanViewDir(paths.ViewDir(), 10*time.Minute)
+	return app, nil
 }
 
 func (a *App) Run(ctx context.Context, args []string) error {
@@ -67,6 +84,7 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	a.jsonOut = opts.jsonOut
 	rest := opts.args
 	if len(rest) == 0 {
 		a.printHelp()
@@ -86,16 +104,21 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	case "version":
 		return a.printVersion()
 	case "init":
-		cfg, err := a.initConfig(ctx, opts.repoOverride)
-		if err != nil {
-			return err
-		}
-		service := a.service(cfg)
-		if err := service.Init(ctx); err != nil {
-			return err
-		}
-		fmt.Fprintf(a.out, "Initialized %s/%s for %s\n", cfg.Owner, cfg.Repo, cfg.Login)
-		return nil
+		return a.cmdInit(ctx, opts.repoOverride, commandArgs)
+	case "account", "accounts", "whoami":
+		return a.cmdAccount(ctx, commandArgs)
+	case "unlock":
+		return a.cmdUnlock(ctx, commandArgs)
+	case "lock":
+		return a.cmdLock()
+	case "encrypt":
+		return a.cmdEncrypt(ctx, commandArgs)
+	case "passphrase":
+		return a.cmdPassphrase(ctx, commandArgs)
+	case "vault":
+		return a.cmdVault(ctx)
+	case "note", "n":
+		return a.cmdNote(ctx, commandArgs)
 	case "new":
 		if len(commandArgs) != 1 {
 			return errs.Wrap(errs.CodeUsage, "usage: pb new <path>", nil)
@@ -120,11 +143,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 			return errs.Wrap(errs.CodeUsage, "usage: pb copy <path>", nil)
 		}
 		return a.copyPath(ctx, commandArgs[0])
-	case "versions":
-		if len(commandArgs) != 1 {
-			return errs.Wrap(errs.CodeUsage, "usage: pb versions <path>", nil)
-		}
-		return a.versionsPath(ctx, commandArgs[0], opts.jsonOut)
+	case "versions", "history":
+		return a.versionsPath(ctx, commandArgs, opts.jsonOut)
 	case "show":
 		if len(commandArgs) != 2 {
 			return errs.Wrap(errs.CodeUsage, "usage: pb show <path> <version-id>", nil)
@@ -186,10 +206,18 @@ func parseGlobalArgs(args []string) (*globalOptions, error) {
 
 func (a *App) printHelp() {
 	fmt.Fprint(a.out, strings.TrimSpace(`
-pb is a GitHub-backed personal pastebin CLI.
+pb is an end-to-end encrypted, GitHub-backed notes and pastebin CLI.
 
 Commands:
-  pb init
+  pb init [--no-vault] [--stdin]
+  pb note [text...] [--title <title>] [--stdin]
+  pb account
+  pb account switch <github-login>
+  pb unlock [--stdin]
+  pb lock
+  pb encrypt [--stdin]
+  pb passphrase
+  pb vault
   pb version
   pb new <path>
   pb edit <path>
@@ -197,7 +225,7 @@ Commands:
   pb save <path> --stdin
   pb paste <path>
   pb copy <path>
-  pb versions <path>
+  pb versions <path> [--limit <n>]
   pb show <path> <version-id>
   pb restore <path> <version-id>
   pb delete <path> [--yes]
@@ -209,7 +237,9 @@ Commands:
 
 Global flags:
   --repo <name>  override GitHub storage repo
-  --json         emit JSON output for read, save, versions, show, restore, delete, list, sync, and status
+  --json         emit JSON output (read, save, note, versions, show, restore, delete, list, sync, status, account, vault)
+
+Passphrases are read from the terminal without echo, or one per line from stdin with --stdin.
 `))
 	fmt.Fprintln(a.out)
 }
@@ -250,7 +280,7 @@ func (a *App) maybeCheckForUpgrade(ctx context.Context, command string) error {
 
 func shouldSkipUpgradeCheck(command string) bool {
 	switch command {
-	case "help", "-h", "--help", "init", "version", "upgrade", "logout":
+	case "help", "-h", "--help", "init", "version", "upgrade", "logout", "unlock", "lock", "encrypt", "passphrase", "account", "accounts", "whoami", "vault":
 		return true
 	default:
 		return false
@@ -390,14 +420,58 @@ func applyUpgradePolicy(cfg *model.Config, policy string) error {
 	}
 }
 
-func (a *App) initConfig(ctx context.Context, repoOverride string) (*model.Config, error) {
-	info, err := a.auth.Info(ctx)
-	if err != nil {
-		return nil, err
+func (a *App) cmdInit(ctx context.Context, repoOverride string, args []string) error {
+	withVault := true
+	for _, arg := range args {
+		switch arg {
+		case "--no-vault":
+			withVault = false
+		case "--stdin":
+			a.secretFromStdin = true
+		default:
+			return errs.Wrap(errs.CodeUsage, "usage: pb init [--no-vault] [--stdin]", nil)
+		}
 	}
+	cfg, err := a.initConfig(ctx, repoOverride)
+	if err != nil {
+		return err
+	}
+	if err := a.service(cfg).Init(ctx); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.out, "Using private repo %s/%s as @%s\n", cfg.Owner, cfg.Repo, cfg.Login)
+	if !withVault {
+		return nil
+	}
+	if !a.interactive && !a.secretFromStdin {
+		fmt.Fprintln(a.out, "Next: run `pb encrypt` (new repo) or `pb unlock` (existing repo) in a terminal.")
+		return nil
+	}
+	return a.setupVault(ctx, cfg)
+}
+
+func (a *App) initConfig(ctx context.Context, repoOverride string) (*model.Config, error) {
 	cfg, err := config.Load(a.paths)
 	if err != nil {
 		return nil, err
+	}
+	login := ""
+	if cfg != nil && auth.ValidLogin(cfg.Login) {
+		// Keep the account the user picked with `pb account switch`.
+		if _, err := a.auth.Token(ctx, cfg.Login); err == nil {
+			login = cfg.Login
+		}
+	}
+	if login == "" {
+		info, err := a.auth.Info(ctx)
+		if err != nil {
+			return nil, err
+		}
+		login = info.Login
+	}
+	info := &auth.Info{Login: login}
+	if repoOverride != "" && !validRepoName(repoOverride) {
+		return nil, errs.Wrap(errs.CodeUsage, "invalid repo name: use letters, digits, '.', '-' or '_'", nil)
 	}
 	if cfg == nil {
 		deviceID, err := config.NewDeviceID()
@@ -445,35 +519,9 @@ func (a *App) loadConfig() (*model.Config, error) {
 		return nil, errs.Wrap(errs.CodeUsage, "run `pb init` first", nil)
 	}
 
-	// Auto-detect if active GitHub account has switched on network operations
-	var isNetworkCommand bool
-	if len(os.Args) > 1 {
-		cmd := os.Args[1]
-		switch cmd {
-		case "sync", "status", "save", "delete", "read", "paste", "copy", "versions", "show", "restore":
-			isNetworkCommand = true
-		case "list":
-			for _, arg := range os.Args {
-				if arg == "--refresh" {
-					isNetworkCommand = true
-					break
-				}
-			}
-		}
+	if !auth.ValidLogin(cfg.Owner) || !validRepoName(cfg.Repo) {
+		return nil, errs.Wrap(errs.CodeLocalCorruption, "pb config has an invalid owner or repo; run `pb init`", nil)
 	}
-
-	if isNetworkCommand {
-		// Verify currently logged in user via a quick 1.5s timeout context
-		checkCtx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-		info, err := a.auth.Info(checkCtx)
-		cancel()
-		if err == nil && info != nil && info.Login != "" && info.Login != cfg.Login {
-			cfg.Login = info.Login
-			cfg.Owner = info.Login
-			_ = config.Save(a.paths, cfg)
-		}
-	}
-
 	a.paths = a.paths.Scope(cfg.Owner, cfg.Repo)
 	if err := config.EnsureLayout(a.paths); err != nil {
 		return nil, err
@@ -493,6 +541,13 @@ func (a *App) editPath(ctx context.Context, filePath string, isNew bool) error {
 	}
 	cacheMgr := cache.New(a.paths)
 	svc := syncer.NewService(a.paths, cfg, cacheMgr, a.remoteStore(cfg))
+	// Unlock before the full-screen editor starts so a passphrase prompt never
+	// fights with the TUI. If it fails, saves stay local until `pb unlock`.
+	if a.interactive {
+		if _, err := a.keyProvider(cfg)(ctx); err != nil {
+			fmt.Fprintf(a.errOut, "pb: %v (edits will be saved locally)\n", err)
+		}
+	}
 	initial, recovered, status, err := a.loadEditorInitial(ctx, svc, cacheMgr, cfg.DeviceID, filePath, isNew)
 	if err != nil {
 		return err
@@ -544,9 +599,9 @@ func (a *App) savePath(ctx context.Context, args []string, jsonOut bool) error {
 	if !stdin {
 		return errs.Wrap(errs.CodeUsage, "usage: pb save <path> --stdin", nil)
 	}
-	content, err := io.ReadAll(a.in)
+	content, err := readAllLimited(a.in, 50<<20)
 	if err != nil {
-		return errs.Wrap(errs.CodeLocalCorruption, "read stdin", err)
+		return err
 	}
 	cfg, err := a.loadConfig()
 	if err != nil {
@@ -557,13 +612,7 @@ func (a *App) savePath(ctx context.Context, args []string, jsonOut bool) error {
 		return err
 	}
 	if jsonOut {
-		return writeJSON(a.out, map[string]any{
-			"path":          outcome.Path,
-			"remote_saved":  outcome.RemoteSaved,
-			"message":       outcome.Message,
-			"version_id":    outcome.VersionID,
-			"conflict_path": outcome.ConflictPath,
-		})
+		return writeJSON(a.out, saveOutcomeJSON(outcome))
 	}
 	msg := outcome.Message
 	if msg == "" {
@@ -693,7 +742,7 @@ func (a *App) writeReadContent(filePath string, content []byte, outPath string, 
 		return writeJSON(a.out, payload)
 	}
 	if media.IsImage(filePath, content) {
-		viewPath, err := writeTempImage(filePath, content)
+		viewPath, err := a.writeTempImage(content)
 		if err != nil {
 			return err
 		}
@@ -710,23 +759,28 @@ func (a *App) writeReadContent(filePath string, content []byte, outPath string, 
 	return err
 }
 
-func writeTempImage(filePath string, content []byte) (string, error) {
-	ext := pathpkg.Ext(filePath)
-	if !media.IsImageExtension(filePath) {
-		switch media.ImageContentType(content) {
-		case media.ContentTypePNG:
-			ext = ".png"
-		case media.ContentTypeJPEG:
-			ext = ".jpg"
-		case media.ContentTypeGIF:
-			ext = ".gif"
-		case media.ContentTypeWEBP:
-			ext = ".webp"
-		default:
-			ext = ".img"
-		}
+func (a *App) writeTempImage(content []byte) (string, error) {
+	// The extension always comes from the sniffed content type, never from
+	// the (user-controlled) note path, so nothing odd reaches the OS opener.
+	ext := ".img"
+	switch media.ImageContentType(content) {
+	case media.ContentTypePNG:
+		ext = ".png"
+	case media.ContentTypeJPEG:
+		ext = ".jpg"
+	case media.ContentTypeGIF:
+		ext = ".gif"
+	case media.ContentTypeWEBP:
+		ext = ".webp"
 	}
-	file, err := os.CreateTemp("", "pb-view-*"+ext)
+	dir := a.paths.ViewDir()
+	if a.paths.RootDir == "" {
+		dir = filepath.Join(os.TempDir(), "pb-view")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", errs.Wrap(errs.CodeLocalCorruption, "create view dir", err)
+	}
+	file, err := os.CreateTemp(dir, "pb-view-*"+ext)
 	if err != nil {
 		return "", errs.Wrap(errs.CodeLocalCorruption, "create temp image", err)
 	}
@@ -737,12 +791,59 @@ func writeTempImage(filePath string, content []byte) (string, error) {
 	return file.Name(), nil
 }
 
-func (a *App) versionsPath(ctx context.Context, filePath string, jsonOut bool) error {
+// cleanViewDir removes decrypted images handed to the viewer earlier.
+func cleanViewDir(dir string, maxAge time.Duration) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		info, err := e.Info()
+		if err == nil && time.Since(info.ModTime()) > maxAge {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
+var repoNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+
+func validRepoName(name string) bool {
+	return repoNamePattern.MatchString(name) && name != "." && name != ".."
+}
+
+func (a *App) versionsPath(ctx context.Context, args []string, jsonOut bool) error {
+	filePath := ""
+	limit := store.DefaultHistoryLimit
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--limit" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 || n > 1000 {
+				return errs.Wrap(errs.CodeUsage, "--limit must be between 1 and 1000", nil)
+			}
+			limit = n
+		case strings.HasPrefix(args[i], "-"):
+			return errs.Wrap(errs.CodeUsage, "usage: pb versions <path> [--limit <n>]", nil)
+		case filePath == "":
+			filePath = args[i]
+		default:
+			return errs.Wrap(errs.CodeUsage, "usage: pb versions <path> [--limit <n>]", nil)
+		}
+	}
+	if filePath == "" {
+		return errs.Wrap(errs.CodeUsage, "usage: pb versions <path> [--limit <n>]", nil)
+	}
 	cfg, err := a.loadConfig()
 	if err != nil {
 		return err
 	}
-	versions, err := a.service(cfg).ListVersions(ctx, filePath)
+	remote := a.remoteStore(cfg)
+	if enc, ok := remote.(*store.EncryptedStore); ok {
+		enc.HistoryLimit = limit
+	}
+	cacheMgr := cache.New(a.paths)
+	versions, err := syncer.NewService(a.paths, cfg, cacheMgr, remote).ListVersions(ctx, filePath)
 	if err != nil {
 		return err
 	}
@@ -929,19 +1030,27 @@ func (a *App) status(ctx context.Context, jsonOut bool) error {
 	if err != nil {
 		return err
 	}
+	if _, err := a.cachedKeys(cfg); err == nil {
+		report.Unlocked = true
+	}
 	if jsonOut {
 		return writeJSON(a.out, report)
 	}
-	fmt.Fprintf(a.out, "Login: %s\nRepo: %s\nFiles: %d\nPending writes: %d\nPending delete: %d\nConflicts: %d\n",
-		report.Login, report.Repo, report.TotalFiles, len(report.PendingWrites), len(report.PendingDelete), len(report.Conflicts))
+	lock := "locked (run `pb unlock`)"
+	if report.Unlocked {
+		lock = "unlocked"
+	}
+	fmt.Fprintf(a.out, "Login: %s\nRepo: %s\nVault: %s\nFiles: %d\nPending writes: %d\nPending delete: %d\nConflicts: %d\n",
+		report.Login, report.Repo, lock, report.TotalFiles, len(report.PendingWrites), len(report.PendingDelete), len(report.Conflicts))
 	return nil
 }
 
 func (a *App) logout() error {
+	a.forgetAllKeys()
 	if err := os.RemoveAll(a.paths.RootDir); err != nil && !os.IsNotExist(err) {
 		return errs.Wrap(errs.CodeLocalCorruption, "remove local pb state", err)
 	}
-	fmt.Fprintln(a.out, "Local pb state removed. GitHub CLI auth is unchanged.")
+	fmt.Fprintln(a.out, "Local pb state and device keys removed. GitHub CLI auth and your encrypted repo are unchanged.")
 	return nil
 }
 

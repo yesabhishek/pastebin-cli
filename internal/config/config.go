@@ -48,9 +48,11 @@ func EnsureLayout(paths Paths) error {
 		paths.CacheDir,
 		paths.RecoveryDir,
 	} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return errs.Wrap(errs.CodeLocalCorruption, fmt.Sprintf("create %s", dir), err)
 		}
+		// Older releases created these world-readable (0755); tighten them.
+		_ = os.Chmod(dir, 0o700)
 	}
 	return nil
 }
@@ -87,6 +89,12 @@ func Save(paths Paths, cfg *model.Config) error {
 		return errs.Wrap(errs.CodeLocalCorruption, "persist config", err)
 	}
 	return nil
+}
+
+// ViewDir is a private scratch directory for decrypted images handed to the
+// OS image viewer. It is cleaned on every run.
+func (p Paths) ViewDir() string {
+	return filepath.Join(p.RootDir, "view")
 }
 
 func DefaultRepo() string {

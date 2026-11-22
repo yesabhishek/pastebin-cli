@@ -27,6 +27,19 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 
 curl -fsSL "$URL" -o "$TMP_DIR/$ASSET"
+curl -fsSL "https://github.com/$OWNER_REPO/releases/download/$TAG/SHA256SUMS" -o "$TMP_DIR/SHA256SUMS"
+
+EXPECTED="$(awk -v a="$ASSET" '$2 == a { print $1 }' "$TMP_DIR/SHA256SUMS")"
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL="$(sha256sum "$TMP_DIR/$ASSET" | awk '{ print $1 }')"
+else
+  ACTUAL="$(shasum -a 256 "$TMP_DIR/$ASSET" | awk '{ print $1 }')"
+fi
+if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+  echo "checksum verification failed for $ASSET; refusing to install" >&2
+  exit 1
+fi
+
 tar -xzf "$TMP_DIR/$ASSET" -C "$TMP_DIR"
 install "$TMP_DIR/$NAME" "$BIN_DIR/$NAME"
 

@@ -5,10 +5,14 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,7 +82,13 @@ func TestCheckRespectsIgnoredReleaseAndInterval(t *testing.T) {
 
 func TestInstallReplacesExecutableOnUnix(t *testing.T) {
 	archive := makeTarGz(t, "pb", []byte("new-binary"))
+	sum := sha256.Sum256(archive)
+	sums := hex.EncodeToString(sum[:]) + "  pb_linux_amd64.tar.gz\n"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/SHA256SUMS" {
+			_, _ = w.Write([]byte(sums))
+			return
+		}
 		_, _ = w.Write(archive)
 	}))
 	defer server.Close()
@@ -94,11 +104,13 @@ func TestInstallReplacesExecutableOnUnix(t *testing.T) {
 	manager.goos = "linux"
 	manager.goarch = "amd64"
 	manager.executablePath = func() (string, error) { return target, nil }
+	manager.allowURL = func(*url.URL) bool { return true }
 
 	release := &Release{
 		TagName: "v0.1.1",
 		Assets: []ReleaseAsset{
 			{Name: "pb_linux_amd64.tar.gz", URL: server.URL + "/pb_linux_amd64.tar.gz"},
+			{Name: "SHA256SUMS", URL: server.URL + "/SHA256SUMS"},
 		},
 	}
 	result, err := manager.Install(context.Background(), release)
@@ -114,6 +126,44 @@ func TestInstallReplacesExecutableOnUnix(t *testing.T) {
 	}
 	if string(got) != "new-binary" {
 		t.Fatalf("unexpected executable contents: %q", string(got))
+	}
+}
+
+func TestInstallRefusesUnverifiedOrTamperedRelease(t *testing.T) {
+	archive := makeTarGz(t, "pb", []byte("evil"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/SHA256SUMS" {
+			_, _ = w.Write([]byte(strings.Repeat("0", 64) + "  pb_linux_amd64.tar.gz\n"))
+			return
+		}
+		_, _ = w.Write(archive)
+	}))
+	defer server.Close()
+	target := filepath.Join(t.TempDir(), "pb")
+	_ = os.WriteFile(target, []byte("old"), 0o755)
+	manager := NewManager("v0.1.0")
+	manager.client = server.Client()
+	manager.goos, manager.goarch = "linux", "amd64"
+	manager.executablePath = func() (string, error) { return target, nil }
+
+	noSums := &Release{TagName: "v0.1.1", Assets: []ReleaseAsset{{Name: "pb_linux_amd64.tar.gz", URL: server.URL + "/a"}}}
+	manager.allowURL = func(*url.URL) bool { return true }
+	if _, err := manager.Install(context.Background(), noSums); err == nil {
+		t.Fatalf("expected refusal without checksums")
+	}
+	bad := &Release{TagName: "v0.1.1", Assets: []ReleaseAsset{
+		{Name: "pb_linux_amd64.tar.gz", URL: server.URL + "/a"},
+		{Name: "SHA256SUMS", URL: server.URL + "/SHA256SUMS"},
+	}}
+	if _, err := manager.Install(context.Background(), bad); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("expected checksum mismatch, got %v", err)
+	}
+	manager.allowURL = allowGitHubDownload
+	if _, err := manager.Install(context.Background(), bad); err == nil || !strings.Contains(err.Error(), "HTTPS GitHub") {
+		t.Fatalf("expected non-GitHub URL refusal, got %v", err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "old" {
+		t.Fatalf("executable must be untouched")
 	}
 }
 
