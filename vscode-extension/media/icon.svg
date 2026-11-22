@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <title>Pastebin</title>
+  <rect width="128" height="128" rx="28" fill="#191919"/>
+  <!-- page with folded corner -->
+  <path d="M38 20h38l22 22v62a8 8 0 0 1-8 8H38a8 8 0 0 1-8-8V28a8 8 0 0 1 8-8z" fill="#ffffff"/>
+  <path d="M76 20v14a8 8 0 0 0 8 8h14z" fill="#c9c9c6"/>
+  <!-- title line -->
+  <rect x="42" y="36" width="24" height="6" rx="3" fill="#191919"/>
+  <!-- keyhole -->
+  <circle cx="64" cy="68" r="10" fill="#191919"/>
+  <path d="M58.5 72h11l-3 20h-5z" fill="#191919"/>
+</svg>

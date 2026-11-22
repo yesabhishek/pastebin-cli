@@ -1,6 +1,14 @@
 import { spawn } from "node:child_process";
 
-export type PBErrorCode = "uninitialized" | "missing-cli" | "command-failed" | "legacy-json-flag-order" | "unsupported-cli";
+export type PBErrorCode =
+  | "uninitialized"
+  | "missing-cli"
+  | "command-failed"
+  | "legacy-json-flag-order"
+  | "unsupported-cli"
+  | "locked"
+  | "not-encrypted"
+  | "auth";
 
 export class PBError extends Error {
   constructor(
@@ -19,11 +27,13 @@ export interface TrackedFile {
   pending_op?: string;
   conflict_path?: string;
   last_error?: string;
+  updated_at?: string;
 }
 
 export interface StatusReport {
   login: string;
   repo: string;
+  unlocked?: boolean;
   total_files: number;
   pending_writes: string[];
   pending_delete: string[];
@@ -44,6 +54,7 @@ export interface SaveResult {
   message: string;
   version_id?: string;
   conflict_path?: string;
+  locked?: boolean;
 }
 
 export interface VersionEntry {
@@ -54,8 +65,41 @@ export interface VersionEntry {
   reason: string;
 }
 
-type PBRunner = (args: string[], stdin?: string) => Promise<string>;
+export interface ShownVersion {
+  path: string;
+  version_id: string;
+  commit_sha: string;
+  timestamp: string;
+  reason: string;
+  content: string;
+}
 
+export interface Account {
+  login: string;
+  host: string;
+  active: boolean;
+  ok: boolean;
+}
+
+export interface AccountView {
+  current: string;
+  repo: string;
+  accounts: Account[];
+}
+
+export interface VaultStatus {
+  account: string;
+  repo: string;
+  encrypted: boolean;
+  unlocked: boolean;
+  legacy_files: number;
+  keystore: string;
+  needs: "" | "unlock" | "encrypt";
+}
+
+export type PBRunner = (args: string[], stdin?: string) => Promise<string>;
+
+/** Thin, typed wrapper around the pb CLI. Secrets are only ever sent via stdin. */
 export class PBClient {
   private readonly run: PBRunner;
 
@@ -71,11 +115,11 @@ export class PBClient {
     if (refresh) {
       args.push("--refresh");
     }
-    return await this.runJSON<TrackedFile[]>(args);
+    return (await this.runJSON<TrackedFile[] | null>(args)) ?? [];
   }
 
   async init(): Promise<void> {
-    await this.run(["init"]);
+    await this.run(["init", "--no-vault"]);
   }
 
   async supportsSave(): Promise<boolean> {
@@ -83,20 +127,55 @@ export class PBClient {
     return help.split(/\r?\n/).some((line) => line.trim().startsWith("pb save "));
   }
 
+  async supportsVault(): Promise<boolean> {
+    const help = await this.run(["help"]);
+    return help.split(/\r?\n/).some((line) => line.trim().startsWith("pb unlock"));
+  }
+
   async status(): Promise<StatusReport> {
-    const status = await this.runJSON<StatusReport>(["status"]);
-    return normalizeStatus(status);
+    return normalizeStatus(await this.runJSON<StatusReport>(["status"]));
+  }
+
+  async vault(): Promise<VaultStatus> {
+    return await this.runJSON<VaultStatus>(["vault"]);
+  }
+
+  async unlock(passphrase: string): Promise<void> {
+    await this.runJSON(["unlock", "--stdin"], passphrase + "\n");
+  }
+
+  async encrypt(passphrase: string): Promise<string> {
+    return await this.run(["encrypt", "--stdin"], passphrase + "\n");
+  }
+
+  async changePassphrase(current: string, next: string): Promise<void> {
+    await this.run(["passphrase", "--stdin"], `${current}\n${next}\n`);
+  }
+
+  async lock(): Promise<void> {
+    await this.run(["lock"]);
+  }
+
+  async accounts(): Promise<AccountView> {
+    const view = await this.runJSON<AccountView>(["account"]);
+    return { current: view.current ?? "", repo: view.repo ?? "", accounts: view.accounts ?? [] };
+  }
+
+  async switchAccount(login: string): Promise<VaultStatus> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(login)) {
+      throw new PBError("command-failed", `Invalid GitHub login: ${login}`);
+    }
+    return await this.runJSON<VaultStatus>(["account", "switch", login]);
   }
 
   async sync(): Promise<SyncResult> {
-    const result = await this.runJSON<SyncResult>(["sync"]);
-    return normalizeSync(result);
+    return normalizeSync(await this.runJSON<SyncResult>(["sync"]));
   }
 
   async readText(path: string): Promise<string> {
     const payload = await this.runJSON<{ content?: string; binary?: boolean }>(["read", path]);
     if (payload.binary) {
-      throw new Error("This note is binary. Use pb read --out for binary content.");
+      throw new PBError("command-failed", "This note is binary. Use `pb read <path> --out <file>` for binary content.");
     }
     return payload.content ?? "";
   }
@@ -106,18 +185,27 @@ export class PBClient {
       return await this.runJSON<SaveResult>(["save", path, "--stdin"], content, "suffix");
     } catch (err) {
       if (err instanceof PBError && err.message.toLowerCase().includes("unknown command: save")) {
-        throw new PBError("unsupported-cli", "Update pb CLI to use Push Current Note from VS Code.", undefined);
+        throw new PBError("unsupported-cli", "Update pb CLI to save notes from VS Code.", undefined);
       }
       throw err;
     }
+  }
+
+  /** Quick capture: the whole note (including a "# Title" line) goes over stdin. */
+  async quickNote(content: string): Promise<SaveResult> {
+    return await this.runJSON<SaveResult>(["note", "--stdin"], content);
   }
 
   async delete(path: string): Promise<void> {
     await this.runJSON<Record<string, string>>(["delete", path, "--yes"]);
   }
 
-  async versions(path: string): Promise<VersionEntry[]> {
-    return await this.runJSON<VersionEntry[]>(["versions", path]);
+  async versions(path: string, limit = 50): Promise<VersionEntry[]> {
+    return (await this.runJSON<VersionEntry[] | null>(["versions", path, "--limit", String(limit)])) ?? [];
+  }
+
+  async show(path: string, versionID: string): Promise<ShownVersion> {
+    return await this.runJSON<ShownVersion>(["show", path, versionID]);
   }
 
   async restore(path: string, versionID: string): Promise<SaveResult> {
@@ -162,7 +250,8 @@ export function classifyJSONParseError(output: string, cause: unknown): PBError 
       "pb returned plain text instead of JSON. Update the Pastebin extension or call pb with `--json` before the command."
     );
   }
-  return new PBError("command-failed", `Failed to parse pb JSON output: ${String(cause)}\nOutput: ${output}`);
+  // Never echo raw output: it may contain note content.
+  return new PBError("command-failed", `Failed to parse pb JSON output (${String(cause)}). Output was ${output.length} bytes.`);
 }
 
 export function classifyPBError(message: string): PBError {
@@ -173,17 +262,36 @@ export function classifyPBError(message: string): PBError {
   if (lower.includes("pb cli not found")) {
     return new PBError("missing-cli", message);
   }
+  if (lower.includes("vault is locked")) {
+    return new PBError("locked", "Your Pastebin vault is locked on this device.");
+  }
+  if (lower.includes("not encrypted yet")) {
+    return new PBError("not-encrypted", "Your Pastebin notes repo is not encrypted yet.");
+  }
   if (lower.includes("unknown command: save")) {
-    return new PBError("unsupported-cli", "Update pb CLI to use Push Current Note from VS Code.");
+    return new PBError("unsupported-cli", "Update pb CLI to save notes from VS Code.");
+  }
+  if (lower.includes("gh auth login") || lower.includes("not authenticated")) {
+    return new PBError("auth", message);
   }
   return new PBError("command-failed", message);
+}
+
+/** Strip the "pb: " prefix and keep only the human-readable part of an error. */
+export function cleanErrorText(stderr: string): string {
+  const lines = stderr
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^pb:\s*/, "").trim())
+    .filter(Boolean);
+  return lines.join("\n");
 }
 
 function createProcessRunner(getBinaryPath: () => string): PBRunner {
   return async (args: string[], stdin?: string): Promise<string> =>
     await new Promise<string>((resolve, reject) => {
       const bin = getBinaryPath();
-      const child = spawn(bin, args, { stdio: "pipe" });
+      // shell: false (default) – arguments are never interpreted by a shell.
+      const child = spawn(bin, args, { stdio: "pipe", windowsHide: true });
       let stdout = "";
       let stderr = "";
 
@@ -207,8 +315,9 @@ function createProcessRunner(getBinaryPath: () => string): PBRunner {
           resolve(stdout);
           return;
         }
-        const details = (stderr.trim() || stdout.trim() || `exit code ${code}`);
-        reject(classifyPBError(`pb command failed: ${bin} ${args.join(" ")}\n${details}`));
+        // Only the command name goes into the message – never stdin or full output.
+        const details = cleanErrorText(stderr) || `exit code ${code}`;
+        reject(classifyPBError(`pb ${args.find((a) => !a.startsWith("-")) ?? ""} failed: ${details}`));
       });
 
       if (stdin !== undefined) {

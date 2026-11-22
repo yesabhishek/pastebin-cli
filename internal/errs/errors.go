@@ -17,6 +17,7 @@ const (
 	CodeLocalCorruption
 	CodeRemoteCorruption
 	CodeNotFound
+	CodeLocked
 )
 
 type Error struct {

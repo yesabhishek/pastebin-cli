@@ -1,152 +1,159 @@
-# pb
+<p align="center">
+  <img src="docs/icon.png" width="96" height="96" alt="Pastebin icon">
+</p>
 
-`pb` is a GitHub-backed personal pastebin CLI for small notes and images.
+<h1 align="center">pb — encrypted notes that sync through your own GitHub</h1>
 
-It stores files in a dedicated private GitHub repository, keeps a local cache for offline edits, autosaves text drafts locally while you work, and gives you explicit save/sync commands plus per-file version history.
+<p align="center">
+  A fast CLI and a Notion-style VS Code extension for private notes, snippets and screenshots.<br>
+  Everything is <b>end-to-end encrypted on your machine</b> before it is uploaded to a private GitHub repo you own.
+</p>
 
-## Features
+---
 
-- GitHub-backed file storage with local-first caching and recovery
-- built-in terminal editor with local draft autosave and Ctrl+V image paste
-- clipboard image paste/copy commands for screenshots and photos
-- explicit `sync` flow for reconciling changes across devices
-- durable per-file version history with show and restore commands
-- built-in release checks with saved upgrade preferences
-- conflict copies instead of risky remote overwrites
-- installable without sudo or admin rights
+## Why pb
 
-## Requirements
+- **Private by design.** Notes, note names and the index are encrypted with AES-256-GCM before they leave your device. GitHub only ever stores ciphertext and random-looking object IDs.
+- **Works on every machine you use.** Unlock once per device with your passphrase. The key then lives in your OS keychain (macOS Keychain, Windows Credential Manager, or Secret Service on Linux).
+- **Your storage, your account.** Data lives in a private repo in *your* GitHub account. There is no server, no subscription, and no third party.
+- **Quick capture.** Press <kbd>⌥⌘P</kbd> (<kbd>Ctrl+Alt+P</kbd>) in VS Code, or run `pb note "…"` in a terminal.
+- **Full version history.** Every save is a version you can browse and restore, fetched and decrypted on demand.
+- **Multiple accounts.** See which GitHub account you're syncing to and switch with one click or `pb account switch`.
+- **Offline-first.** Edits are cached locally and sync when you're back online. Conflicts never overwrite: they create a conflict copy instead.
 
-- Go 1.25+ if you want to build from source
-- [GitHub CLI](https://cli.github.com/) installed and authenticated with `gh auth login`
+## Install
 
-## Install From Releases
+### CLI
 
-macOS and Linux:
+macOS / Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yesabhishek/pastebin-cli/main/scripts/install.sh | sh
 ```
 
-Windows PowerShell:
+Windows (PowerShell):
 
 ```powershell
 iwr https://raw.githubusercontent.com/yesabhishek/pastebin-cli/main/scripts/install.ps1 -useb | iex
 ```
 
-These installers place the binary in a user-owned bin directory, so no sudo or admin rights are required.
+The installers verify the release's `SHA256SUMS` before installing, and need no sudo or admin rights. Requires the [GitHub CLI](https://cli.github.com/) (`gh auth login`).
 
-## Build From Source
+From source (Go 1.26+):
 
 ```bash
 git clone https://github.com/yesabhishek/pastebin-cli.git
-cd pastebin-cli
-go build -o pb ./cmd/pb
+cd pastebin-cli && go build -o pb ./cmd/pb
 ```
 
-## Local Checks
+### VS Code extension
 
-Install the local sanity-check tools first:
+Search **"Pastebin — Encrypted Notes"** in the Extensions view, or install it from the [Marketplace](https://marketplace.visualstudio.com/items?itemName=AbhishekChoudhury.pastebin-vscode). It uses the `pb` CLI under the hood.
+
+## Quick start
 
 ```bash
-brew install actionlint shellcheck
-git config core.hooksPath .githooks
+pb init                         # connects your GitHub account, creates a PRIVATE repo, sets your passphrase
+pb note "call the bank at 3pm"  # quick note -> notes/2026-11-22-1405-call-the-bank-at-3pm.md
+pb list
+pb sync
 ```
 
-Then run the same checks locally that CI uses:
+On another machine:
 
 ```bash
-./scripts/check.sh
+pb init                         # same account -> asks for your passphrase once, then syncs
 ```
 
-## Quick Start
+### Upgrading from pb ≤ 0.2 (unencrypted repos)
 
 ```bash
-./pb init
-./pb version
-./pb new notes/today.txt
-./pb paste photos/screenshot
-./pb copy photos/screenshot.png
-./pb versions notes/today.txt
-./pb list
-./pb sync
+pb encrypt
 ```
 
-`pb init` uses your current `gh` login and creates a dedicated private storage repository, `pastebin-cli-store`, by default.
+This sets a passphrase, encrypts every existing note, and deletes the plaintext copies. Older pb releases are locked out on purpose so they can't upload plaintext again: upgrade pb on all your machines.
+
+> **Git history:** encryption can't rewrite history you already pushed, so old plaintext versions remain in that repo's commit history. To get rid of them, start a fresh repo with `pb --repo pastebin-vault init`, then delete the old repo on GitHub.
+
+## VS Code extension
+
+| | |
+|---|---|
+| **Sidebar** | Notion-style page tree with search (<kbd>/</kbd>), recent pages, folders, and sync status |
+| **Quick note** | <kbd>⌥⌘P</kbd> / <kbd>Ctrl+Alt+P</kbd> opens a capture page. <kbd>⌘↵</kbd> encrypts, saves and syncs |
+| **Editing** | Pages open as normal editor tabs. <kbd>⌘S</kbd> saves and syncs |
+| **History** | <kbd>⌥⌘H</kbd> on an open page, or **⋯ → Version history** in the sidebar |
+| **Accounts** | Click your name at the top of the sidebar, or the `🔒 @login` status-bar item |
+| **Search** | <kbd>⌥⌘O</kbd> / <kbd>Ctrl+Alt+O</kbd> to jump to any page |
 
 ## Commands
 
 ```text
-pb init
-pb version
-pb new <path>
-pb edit <path>
+pb init [--no-vault] [--stdin]          connect account + private repo, unlock or create the vault
+pb note [text…] [--title T] [--stdin]   quick note (opens the editor when given no text)
+pb account                              show the account you sync as and the available gh accounts
+pb account switch <login>               sync with a different GitHub account
+pb unlock | pb lock                     store / forget the vault key on this device
+pb encrypt                              create the vault and encrypt legacy plaintext notes
+pb passphrase                           change the passphrase (notes are not re-encrypted)
+pb vault                                encryption status
+
+pb new <path> | pb edit <path>          built-in terminal editor (Ctrl+S save, Ctrl+Q quit, Ctrl+V paste image)
 pb read <path> [--out <file>]
 pb save <path> --stdin
-pb paste <path>
-pb copy <path>
-pb versions <path>
-pb show <path> <version-id>
-pb restore <path> <version-id>
+pb paste <path> | pb copy <path>        clipboard images and text
+pb versions <path> [--limit N]
+pb show <path> <version> | pb restore <path> <version>
 pb delete <path> [--yes]
 pb list [prefix] [--refresh]
-pb sync
-pb status
+pb sync | pb status
 pb upgrade [--yes] [--check] [--policy prompt|auto|manual]
-pb logout
+pb logout                               remove local state and device keys
 ```
 
-Global flags:
+Global flags: `--repo <name>` picks the storage repo, and `--json` gives machine-readable output.
+Passphrases are read from the terminal without echo, or one per line from stdin with `--stdin`. They are never passed as command arguments.
 
-- `--repo <name>`: override the default GitHub storage repo
-- `--json`: emit JSON for `read`, `save`, `versions`, `show`, `restore`, `delete`, `list`, `sync`, and `status`
+## Security model
 
-## Images And Clipboard
+| What | How |
+|---|---|
+| Note contents | AES-256-GCM with a random nonce per write. Ciphertext is bound to its object ID, so blobs can't be swapped |
+| Note names | Never uploaded in clear. Objects are stored as `objects/<HMAC-SHA256(path)>`, and commit messages contain only the ID |
+| Index | Encrypted (`meta/index.enc`) |
+| Data key | Random 256-bit key, wrapped with **Argon2id** (64 MiB, t=3) from your passphrase, stored as `meta/vault.json` |
+| On this device | Data key in the OS keychain (0600 file fallback). Local cache in a `0700` directory |
+| GitHub access | Talks to `api.github.com` over HTTPS with the token of the account *you* selected (`gh auth token --user`). Tokens are never put in arguments or logs |
+| Repo visibility | pb refuses to use a **public** repo |
+| Updates | `pb upgrade` and the installers verify `SHA256SUMS` and only download from GitHub over HTTPS |
+| VS Code | Strict CSP webviews (no remote content, nonce-only scripts, no HTML injection). `pbPath` is only read from user settings, and local builds need a trusted workspace |
 
-- `pb paste <path>` saves the current OS clipboard image as PNG content. If `<path>` has no image extension, pb appends `.png`.
-- `pb copy <path>` copies stored images back to the OS clipboard. Text files are copied as text.
-- `Ctrl+V` in the editor saves a clipboard image to the current path when the text buffer is clean.
-- `pb read <image>` opens stored images in the default image viewer.
-- `pb read <path> --out <file>` writes raw bytes to a file, which is the safest way to script image or binary reads.
-- Clipboard support depends on desktop clipboard access. Linux support is X11-oriented; Wayland sessions may need XWayland/`DISPLAY`.
+**What is still visible to GitHub:** the number of notes, their approximate sizes, and when you save them.
+**There is no passphrase recovery.** Keep the passphrase in a password manager. Losing a *machine* is fine: install pb on another one and unlock with the passphrase.
+Decrypted copies are cached on your disk, so use full-disk encryption (FileVault or BitLocker) on your machines.
 
-Editor shortcuts:
+## Storage backends
 
-- `Ctrl+S`: save
-- `Ctrl+Q` or `Ctrl+X`: save and quit
-- `Ctrl+V`: paste clipboard image when the buffer has no unsaved text
+GitHub is the only backend today. Storage sits behind a small provider-agnostic interface ([`internal/store/backend.go`](internal/store/backend.go)), and encryption, indexing and sync all live above it, so adding **GitLab** (good fit: it has a repository files API with per-file history) or **Bitbucket** only requires writing an adapter. Contributions are welcome.
 
-## Release Updates
+## Local data layout
 
-- `pb` checks GitHub for a newer release about once a day after you have run `pb init`
-- when an update is available, you can upgrade now, always auto-upgrade, skip that release, or turn prompts off
-- `pb upgrade --check` checks whether a newer release exists
-- `pb upgrade --yes` installs the latest published release immediately
-- `pb upgrade --policy auto|prompt|manual` saves your upgrade preference
-- `pb version` prints the currently running CLI version
+Under your user config directory (`~/Library/Application Support/pb` on macOS, `~/.config/pb` on Linux, `%AppData%\pb` on Windows):
 
-## Version History
+- `config.json`: selected account, repo, device id, upgrade preferences
+- `accounts/<owner>/<repo>/state/`: index, sync journal, autosave drafts
+- `accounts/<owner>/<repo>/cache/files/`: decrypted local cache
+- `keys/`: only used when no OS keychain is available
 
-- `pb versions <path>` lists durable synced versions for a file, newest first
-- `pb show <path> <version-id>` prints the content of a historical version
-- `pb restore <path> <version-id>` restores a historical version as the latest one
+## Development
 
-Durable versions are created on explicit save, save-on-exit, restore, and sync. The editor's background autosave only protects local drafts and does not create remote version spam.
+```bash
+brew install actionlint shellcheck
+git config core.hooksPath .githooks
+./scripts/check.sh                      # gofmt, vet, tests, actionlint, shellcheck
+cd vscode-extension && npm ci && npm test
+```
 
-## Local Data Layout
+## License
 
-`pb` stores app-owned local state under your user config directory:
-
-- `config.json`: repo/login/device settings
-- `state/index.json`: tracked file metadata
-- `state/journal.json`: resumable pending operations
-- `state/recovery/`: autosave recovery snapshots
-- `cache/files/`: cached text content
-
-## Project Files
-
-- [Repo check script](scripts/check.sh)
-- [Shell installer](scripts/install.sh)
-- [PowerShell installer](scripts/install.ps1)
-- [Release workflow](.github/workflows/release.yml)
-- [CI workflow](.github/workflows/ci.yml)
+MIT, see [LICENSE](LICENSE).

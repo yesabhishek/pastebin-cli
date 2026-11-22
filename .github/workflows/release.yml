@@ -65,3 +65,21 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.zip
+
+  checksums:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir assets
+          cd assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'pb_*'
+          sha256sum pb_* > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber

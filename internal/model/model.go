@@ -71,6 +71,8 @@ type RemoteFile struct {
 	Checksum  string    `json:"checksum"`
 	Deleted   bool      `json:"deleted"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// CommitSHA is set on write results only; it is never persisted.
+	CommitSHA string `json:"-"`
 }
 
 type RemoteIndex struct {
@@ -84,6 +86,7 @@ type SaveOutcome struct {
 	RemoteSaved  bool
 	Message      string
 	VersionID    string
+	Locked       bool
 }
 
 type VersionEntry struct {
@@ -104,6 +107,7 @@ type SyncResult struct {
 type StatusReport struct {
 	Login         string         `json:"login"`
 	Repo          string         `json:"repo"`
+	Unlocked      bool           `json:"unlocked"`
 	TotalFiles    int            `json:"total_files"`
 	PendingWrites []string       `json:"pending_writes"`
 	PendingDelete []string       `json:"pending_delete"`

@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/yesabhishek/pastebin-cli/internal/cache"
 	"github.com/yesabhishek/pastebin-cli/internal/config"
@@ -156,6 +159,9 @@ func (s *Service) saveContentLocked(ctx context.Context, filePath string, conten
 
 	snapshot, err := s.store.FetchIndex(ctx)
 	if err != nil {
+		if errs.IsCode(err, errs.CodeLocked) {
+			return &model.SaveOutcome{Path: filePath, Locked: true, Message: "saved locally; vault is locked - run `pb unlock` to sync"}, nil
+		}
 		return &model.SaveOutcome{Path: filePath, Message: "saved locally; remote sync pending"}, nil
 	}
 	outcome, err := s.applyUpsert(ctx, state, snapshot, tracked, filePath, content, reason)
@@ -309,8 +315,14 @@ func (s *Service) Sync(ctx context.Context) (*model.SyncResult, error) {
 	}
 	result := &model.SyncResult{}
 	seen := map[string]bool{}
+	toPull := []string{}
 
 	for remotePath, remoteFile := range snapshot.Index.Files {
+		if remoteFile == nil || cache.ValidatePath(remotePath) != nil {
+			// Never trust paths from the remote index blindly.
+			delete(snapshot.Index.Files, remotePath)
+			continue
+		}
 		seen[remotePath] = true
 		local := state.Files[remotePath]
 		if remoteFile.Deleted {
@@ -329,23 +341,7 @@ func (s *Service) Sync(ctx context.Context) (*model.SyncResult, error) {
 			continue
 		}
 		if local == nil || (local.PendingOp == model.PendingNone && local.RemoteRevision != remoteFile.Revision) {
-			content, sha, err := s.store.FetchFile(ctx, remotePath)
-			if err != nil {
-				return nil, err
-			}
-			checksum, err := s.cache.SaveContent(remotePath, content)
-			if err != nil {
-				return nil, err
-			}
-			state.Files[remotePath] = &model.TrackedFile{
-				Path:           remotePath,
-				BaseRevision:   sha,
-				RemoteRevision: sha,
-				Checksum:       checksum,
-				RemoteChecksum: checksum,
-				UpdatedAt:      remoteFile.UpdatedAt,
-			}
-			result.Pulled = append(result.Pulled, remotePath)
+			toPull = append(toPull, remotePath)
 			continue
 		}
 		if local.PendingOp == model.PendingUpsert && local.BaseRevision != remoteFile.Revision {
@@ -356,6 +352,12 @@ func (s *Service) Sync(ctx context.Context) (*model.SyncResult, error) {
 			result.Conflicts = append(result.Conflicts, conflictPath)
 		}
 	}
+
+	if err := s.pullParallel(ctx, state, snapshot, toPull); err != nil {
+		return nil, err
+	}
+	sort.Strings(toPull)
+	result.Pulled = append(result.Pulled, toPull...)
 
 	for filePath, local := range state.Files {
 		if local.PendingOp == model.PendingNone || local.PendingOp == model.PendingConflict {
@@ -437,6 +439,50 @@ func (s *Service) Sync(ctx context.Context) (*model.SyncResult, error) {
 	return result, nil
 }
 
+// pullParallel downloads and decrypts changed remote files concurrently.
+func (s *Service) pullParallel(ctx context.Context, state *model.State, snapshot *store.RemoteSnapshot, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	type pulled struct {
+		content []byte
+		sha     string
+	}
+	results := make([]pulled, len(paths))
+	group, gctx := errgroup.WithContext(ctx)
+	group.SetLimit(pullConcurrency)
+	for i, p := range paths {
+		group.Go(func() error {
+			content, sha, err := s.store.FetchFile(gctx, p)
+			if err != nil {
+				return err
+			}
+			results[i] = pulled{content: content, sha: sha}
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return err
+	}
+	for i, p := range paths {
+		checksum, err := s.cache.SaveContent(p, results[i].content)
+		if err != nil {
+			return err
+		}
+		state.Files[p] = &model.TrackedFile{
+			Path:           p,
+			BaseRevision:   results[i].sha,
+			RemoteRevision: results[i].sha,
+			Checksum:       checksum,
+			RemoteChecksum: checksum,
+			UpdatedAt:      snapshot.Index.Files[p].UpdatedAt,
+		}
+	}
+	return nil
+}
+
+const pullConcurrency = 8
+
 func (s *Service) applyUpsert(ctx context.Context, state *model.State, snapshot *store.RemoteSnapshot, tracked *model.TrackedFile, filePath string, content []byte, reason string) (*model.SaveOutcome, error) {
 	remoteRecord := snapshot.Index.Files[filePath]
 	if remoteRecord != nil && tracked.BaseRevision != "" && remoteRecord.Revision != tracked.BaseRevision {
@@ -473,8 +519,11 @@ func (s *Service) applyUpsert(ctx context.Context, state *model.State, snapshot 
 	if err := s.cache.SaveState(state); err != nil {
 		return nil, err
 	}
-	versionID := latestVersionID(ctx, s.store, filePath)
-	message := "saved locally and synced to GitHub"
+	versionID := shortID(record.CommitSHA)
+	if versionID == "" {
+		versionID = latestVersionID(ctx, s.store, filePath)
+	}
+	message := "saved locally and synced"
 	if versionID != "" {
 		if reason == "restore" {
 			message = "Restored as version " + versionID
@@ -604,6 +653,13 @@ func shouldSkipVersionedSave(tracked *model.TrackedFile, checksum string) bool {
 		return false
 	}
 	return tracked.Checksum == checksum && tracked.RemoteChecksum == checksum
+}
+
+func shortID(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 func latestVersionID(ctx context.Context, remote store.RemoteStore, filePath string) string {

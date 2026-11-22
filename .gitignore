@@ -2,3 +2,8 @@ dist/
 /pb
 /pb.exe
 node_modules/
+bin/
+.antigravitycli/
+*.vsix
+.env
+.env.*

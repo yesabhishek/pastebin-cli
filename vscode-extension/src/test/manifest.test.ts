@@ -17,6 +17,7 @@ interface MenuContribution {
 
 interface PackageManifest {
   icon: string;
+  capabilities: { untrustedWorkspaces: { restrictedConfigurations: string[] } };
   repository: {
     type: string;
     url: string;
@@ -29,6 +30,9 @@ interface PackageManifest {
   keywords: string[];
   contributes: {
     commands: CommandContribution[];
+    keybindings: Array<{ command: string; key: string; mac?: string; when?: string }>;
+    views: { pastebin: Array<{ id: string; type?: string }> };
+    configuration: { properties: Record<string, { scope?: string }> };
     viewsContainers: {
       activitybar: Array<{
         id: string;
@@ -53,7 +57,7 @@ test("marketplace metadata is publish-ready", () => {
   assert.equal(manifest.homepage, "https://github.com/yesabhishek/pastebin-cli#readme");
   assert.equal(manifest.bugs.url, "https://github.com/yesabhishek/pastebin-cli/issues");
   assert.equal(manifest.license, "SEE LICENSE IN LICENSE");
-  for (const keyword of ["pastebin", "notes", "scratchpad", "github", "sync", "clipboard"]) {
+  for (const keyword of ["pastebin", "notes", "github", "sync", "encrypted"]) {
     assert.ok(manifest.keywords.includes(keyword), `missing keyword ${keyword}`);
   }
 });
@@ -78,43 +82,47 @@ test("primary view title actions are icon-only essentials", () => {
   const primary = manifest.contributes.menus["view/title"]
     .filter((item) => item.group?.startsWith("navigation"))
     .map((item) => item.command);
-
-  assert.deepEqual(primary, [
-    "pastebin.newNote",
-    "pastebin.sync",
-    "pastebin.refresh"
-  ]);
-});
-
-test("primary view title actions all have product icons", () => {
+  assert.deepEqual(primary, ["pastebin.quickNote", "pastebin.sync", "pastebin.switchAccount"]);
   const commands = new Map(manifest.contributes.commands.map((command) => [command.command, command]));
-  for (const commandID of ["pastebin.newNote", "pastebin.sync", "pastebin.refresh"]) {
-    const command = commands.get(commandID);
-    assert.ok(command?.icon?.startsWith("$("), `${commandID} should have a product icon`);
+  for (const id of primary) {
+    assert.ok(commands.get(id)?.icon?.startsWith("$("), `${id} should have a product icon`);
   }
 });
 
-test("push current note is available from editor title with product icon", () => {
-  const action = manifest.contributes.menus["editor/title"]
-    .find((item) => item.command === "pastebin.pushCurrentNote");
-  assert.ok(action, "push current note should be available in editor title");
-  assert.equal(action?.group, "navigation@1");
+test("quick note has a global keyboard shortcut", () => {
+  const binding = manifest.contributes.keybindings.find((k) => k.command === "pastebin.quickNote");
+  assert.equal(binding?.mac, "cmd+alt+p");
+  assert.equal(binding?.key, "ctrl+alt+p");
+  assert.equal(binding?.when, undefined, "quick note should work from anywhere");
+});
 
-  const command = manifest.contributes.commands
-    .find((item) => item.command === "pastebin.pushCurrentNote");
+test("sidebar is a webview view", () => {
+  const view = manifest.contributes.views.pastebin.find((v) => v.id === "pastebin.notesView");
+  assert.equal(view?.type, "webview");
+});
+
+test("pb path cannot be set by a workspace", () => {
+  const prop = manifest.contributes.configuration.properties["pastebin.pbPath"];
+  assert.equal(prop.scope, "machine");
+  assert.ok(manifest.capabilities.untrustedWorkspaces.restrictedConfigurations.includes("pastebin.pbPath"));
+});
+
+test("save current editor is in the editor title", () => {
+  const action = manifest.contributes.menus["editor/title"].find((item) => item.command === "pastebin.pushCurrentNote");
+  assert.ok(action?.group?.startsWith("navigation"));
+  const command = manifest.contributes.commands.find((item) => item.command === "pastebin.pushCurrentNote");
   assert.equal(command?.icon, "$(cloud-upload)");
 });
 
-test("build local pb command is available in command palette", () => {
-  const command = manifest.contributes.commands
-    .find((item) => item.command === "pastebin.buildLocalPB");
+test("build local pb requires a trusted workspace", () => {
+  const command = manifest.contributes.commands.find((item) => item.command === "pastebin.buildLocalPB") as CommandContribution & { enablement?: string };
   assert.equal(command?.title, "Build Local pb");
-  assert.equal(command?.category, "Pastebin");
-  assert.equal(command?.icon, "$(tools)");
+  assert.equal(command?.enablement, "isWorkspaceTrusted");
 });
 
-test("filter is available only from overflow view menu", () => {
-  const filter = manifest.contributes.menus["view/title"].find((item) => item.command === "pastebin.setFilter");
-  assert.ok(filter, "filter command should be present in the view title menu");
-  assert.equal(filter?.group?.startsWith("navigation"), undefined);
+test("webview scripts never use innerHTML or eval", () => {
+  for (const file of ["sidebar.js", "quicknote.js", "history.js"]) {
+    const src = readFileSync(join(extensionRoot, "media", file), "utf8");
+    assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|eval\(|new Function/.test(src), `${file} must not build HTML from strings`);
+  }
 });
