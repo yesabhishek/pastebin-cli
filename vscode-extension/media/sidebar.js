@@ -90,6 +90,10 @@
 
   function iconNode(name) { return icon(name); }
 
+  function providerLabel(p) {
+    return ({ github: "GitHub", gitlab: "GitLab", bitbucket: "Bitbucket" })[p] || "GitHub";
+  }
+
   function avatarColor(login) {
     const palette = ["#37352f", "#2383e2", "#0f7b6c", "#9065b0", "#d9730d", "#c4554d", "#337ea9"];
     let h = 0;
@@ -121,7 +125,7 @@
       root.append(el("div", { class: "welcome" },
         el("div", { class: "big" }, "🗒️"),
         el("h2", null, "Welcome to Pastebin"),
-        el("p", null, "Private, end-to-end encrypted notes that sync through your own GitHub account."),
+        el("p", null, "Private, end-to-end encrypted notes that sync through your own GitHub, GitLab or Bitbucket account."),
         el("button", { class: "pb-btn primary", onclick: () => post("init") }, "Get started")));
       return;
     }
@@ -144,7 +148,7 @@
         el("span", { class: "ws-chevron" }, "▾")),
       el("div", { class: "ws-sub", title: acc.repo },
         el("span", { class: "pb-tag " + (acc.unlocked ? "secure" : "pending") }, iconNode(acc.unlocked ? "lock" : "unlock"), acc.unlocked ? "Encrypted" : "Locked"),
-        el("span", null, "@" + acc.login))
+        el("span", null, "@" + acc.login + " · " + providerLabel(acc.provider)))
     );
 
     if (!acc.unlocked) {
@@ -316,17 +320,18 @@
     if (!anchor || !accountView) return;
     const items = [el("div", { class: "hdr" }, "Sync notes as")];
     for (const a of accountView.accounts) {
-      const current = a.login === accountView.current;
+      const current = a.id === accountView.current;
       items.push(el("button", {
-        class: "row", title: a.ok ? "Switch to @" + a.login : "Session expired – run gh auth login",
-        onclick: () => { closeMenu(); if (!current) post("switchAccount", { login: a.login }); }
+        class: "row", title: a.ok ? "Switch to " + a.id : "Signed out – sign in again",
+        onclick: () => { closeMenu(); if (!current) post("switchAccount", { id: a.id }); }
       },
         el("span", { class: "pb-avatar", style: "width:18px;height:18px;font-size:10px;background:" + avatarColor(a.login) }, a.login.charAt(0)),
-        el("span", { class: "label" }, "@" + a.login + (a.ok ? "" : " (expired)")),
+        el("span", { class: "label" }, "@" + a.login + (a.ok ? "" : " (signed out)")),
+        el("span", { class: "sub" }, providerLabel(a.provider)),
         current ? el("span", { class: "check" }, "✓") : null));
     }
     items.push(el("div", { class: "sep" }));
-    items.push(row("user", "Add GitHub account…", () => { closeMenu(); post("addAccount"); }));
+    items.push(row("user", "Add account…", () => { closeMenu(); post("addAccount"); }));
     if (state && state.account && state.account.unlocked) {
       items.push(row("lock", "Lock vault on this device", () => { closeMenu(); post("lock"); }));
     } else {

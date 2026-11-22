@@ -24,7 +24,7 @@ export function composeQuickNote(title: string, body: string): string {
 }
 
 /**
- * Notion-style quick capture. Opens instantly via keyboard shortcut; Cmd/Ctrl+Enter
+ * Quick capture page. Opens instantly via keyboard shortcut; Cmd/Ctrl+Enter
  * encrypts, saves and syncs, then closes. Drafts live in memory only.
  */
 export class QuickNotePanel {
@@ -55,7 +55,7 @@ export class QuickNotePanel {
     const mod = process.platform === "darwin" ? "⌘" : "Ctrl";
     w.html = buildHtml({
       cspSource: w.cspSource,
-      styles: [asset(w, extensionUri, "notion.css")],
+      styles: [asset(w, extensionUri, "theme.css")],
       scripts: [asset(w, extensionUri, "quicknote.js")],
       bodyClass: "page",
       title: "Quick note",
@@ -151,7 +151,7 @@ export class HistoryPanel {
     panel.iconPath = vscode.Uri.joinPath(extensionUri, "media", "icon.png");
     w.html = buildHtml({
       cspSource: w.cspSource,
-      styles: [asset(w, extensionUri, "notion.css")],
+      styles: [asset(w, extensionUri, "theme.css")],
       scripts: [asset(w, extensionUri, "history.js")],
       bodyClass: "page history",
       title: "Version history",

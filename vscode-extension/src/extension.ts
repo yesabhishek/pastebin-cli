@@ -4,7 +4,7 @@ import { NOTE_SCHEME, NoteFileSystem, notePathFromUri, noteUri } from "./noteFs"
 import { HistoryPanel, QuickNotePanel } from "./panels";
 import { SidebarAction, SidebarProvider } from "./sidebar";
 import { buildLocalPB, repoRoot } from "./localBuilder";
-import { displayTitle } from "./viewState";
+import { displayTitle, providerLabel } from "./viewState";
 
 const C = {
   quickNote: "pastebin.quickNote",
@@ -18,6 +18,7 @@ const C = {
   searchNotes: "pastebin.searchNotes",
   pushCurrentNote: "pastebin.pushCurrentNote",
   switchAccount: "pastebin.switchAccount",
+  addAccount: "pastebin.addAccount",
   unlock: "pastebin.unlock",
   lock: "pastebin.lock",
   changePassphrase: "pastebin.changePassphrase",
@@ -63,9 +64,10 @@ export function activate(context: vscode.ExtensionContext): void {
       status.hide();
       return;
     }
+    const host = providerLabel(st.account.provider);
     status.text = `${st.account.unlocked ? "$(lock)" : "$(unlock)"} @${st.account.login}`;
     status.tooltip = new vscode.MarkdownString(
-      `**Pastebin** · syncing as **@${st.account.login}**\n\n${st.account.repo}\n\n${st.account.unlocked ? "🔒 Vault unlocked on this device" : "🔐 Vault locked – click to unlock or switch"}\n\n${st.total} pages${st.pending ? ` · ${st.pending} pending` : ""}`
+      `**Pastebin** · syncing as **@${st.account.login}** on ${host}\n\n${st.account.repo}\n\n${st.account.unlocked ? "Vault unlocked on this device" : "Vault locked – click to unlock or switch"}\n\n${st.total} pages${st.pending ? ` · ${st.pending} pending` : ""}`
     );
     status.show();
   };
@@ -99,9 +101,9 @@ export function activate(context: vscode.ExtensionContext): void {
   function showError(err: unknown): void {
     const message = err instanceof Error ? err.message : String(err);
     if (err instanceof PBError && err.code === "auth") {
-      void vscode.window.showErrorMessage(message, "Sign in with gh").then((choice) => {
+      void vscode.window.showErrorMessage(message, "Add account…").then((choice) => {
         if (choice) {
-          openGhLogin();
+          void addAccount();
         }
       });
       return;
@@ -145,7 +147,7 @@ export function activate(context: vscode.ExtensionContext): void {
       {
         modal: true,
         detail:
-          "Notes are encrypted on this machine before they're uploaded, so GitHub only ever stores ciphertext. " +
+          "Notes are encrypted on this machine before they're uploaded, so your Git host only ever stores ciphertext. " +
           "You'll enter the same passphrase once on each new device.\n\nThere is no way to recover notes if you forget it — store it in your password manager."
       },
       "Create passphrase"
@@ -185,7 +187,7 @@ export function activate(context: vscode.ExtensionContext): void {
       ).then((c) => {
         if (c) {
           void vscode.window.showInformationMessage(
-            "Older plaintext versions still exist in the repo's git history. To erase them, create a fresh repo with `pb --repo <new-name> init` and delete the old repo on GitHub.",
+            "Older plaintext versions still exist in the repo's git history. To erase them, create a fresh repo with `pb --repo <new-name> init` and delete the old repository on your Git host.",
             { modal: true }
           );
         }
@@ -317,48 +319,127 @@ export function activate(context: vscode.ExtensionContext): void {
     });
   }
 
-  async function switchAccount(login?: string): Promise<void> {
-    if (!login) {
+  async function switchAccount(id?: string): Promise<void> {
+    if (!id) {
       const view = await run(() => client.accounts());
       if (!view) {
         return;
       }
-      const items: (vscode.QuickPickItem & { login?: string; add?: boolean })[] = view.accounts.map((a) => ({
-        label: `${a.login === view.current ? "$(check)" : "$(account)"} @${a.login}`,
-        description: a.login === view.current ? "syncing now" : a.ok ? "" : "session expired",
-        login: a.login
+      const items: (vscode.QuickPickItem & { id?: string; add?: boolean })[] = view.accounts.map((a) => ({
+        label: `${a.id === view.current ? "$(check)" : "$(account)"} @${a.login}`,
+        description: `${providerLabel(a.provider)}${a.id === view.current ? " · syncing now" : a.ok ? "" : " · signed out"}`,
+        id: a.id
       }));
-      items.push({ label: "$(add) Add GitHub account…", add: true });
+      items.push({ label: "$(add) Add account…", description: "GitHub, GitLab or Bitbucket", add: true });
       const picked = await vscode.window.showQuickPick(items, {
-        title: view.current ? `Pastebin · syncing as @${view.current}` : "Pastebin · choose account",
-        placeHolder: "Pick the GitHub account to sync notes with"
+        title: view.current ? `Pastebin · syncing as ${view.current}` : "Pastebin · choose account",
+        placeHolder: "Pick the account to sync notes with"
       });
       if (!picked) {
         return;
       }
       if (picked.add) {
-        openGhLogin();
+        await addAccount();
         return;
       }
-      if (picked.login === view.current) {
+      if (picked.id === view.current) {
         return;
       }
-      login = picked.login;
+      id = picked.id;
     }
-    if (!login) {
+    if (!id) {
       return;
     }
-    const target = login;
+    const target = id;
     const st = await run(() =>
-      vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Switching to @${target}…` }, () => client.switchAccount(target))
+      vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Switching to ${target}…` }, () => client.switchAccount(target))
     );
     if (!st) {
       return;
     }
     await refresh();
     await handleVaultNeeds(st);
-    void vscode.window.showInformationMessage(`Pastebin now syncs as @${st.account} → ${st.repo}`);
+    void vscode.window.showInformationMessage(`Pastebin now syncs as @${st.account} on ${providerLabel(st.provider)} → ${st.repo}`);
     void syncNow(true);
+  }
+
+  type ProviderPick = vscode.QuickPickItem & { provider: "github" | "gitlab" | "bitbucket" };
+
+  async function pickProvider(title: string): Promise<ProviderPick["provider"] | undefined> {
+    const picked = await vscode.window.showQuickPick<ProviderPick>(
+      [
+        { label: "GitHub", description: "Uses your GitHub CLI sign-in", provider: "github" },
+        { label: "GitLab", description: "gitlab.com or a self-managed instance", provider: "gitlab" },
+        { label: "Bitbucket", description: "Bitbucket Cloud", provider: "bitbucket" }
+      ],
+      { title, placeHolder: "Where should your encrypted notes be stored?" }
+    );
+    return picked?.provider;
+  }
+
+  /** Sign in to a provider and optionally start syncing with it. Returns the account id. */
+  async function addAccount(provider?: ProviderPick["provider"], switchAfter = true): Promise<string | undefined> {
+    provider = provider ?? (await pickProvider("Add account"));
+    if (!provider) {
+      return undefined;
+    }
+    if (provider === "github") {
+      openGhLogin();
+      return undefined;
+    }
+    let host: string | undefined;
+    let email: string | undefined;
+    if (provider === "gitlab") {
+      host = await vscode.window.showInputBox({
+        title: "GitLab host",
+        prompt: "Use gitlab.com, or your self-managed GitLab hostname",
+        value: "gitlab.com",
+        ignoreFocusOut: true,
+        validateInput: (v) => (/^[A-Za-z0-9.-]+(:[0-9]{1,5})?$/.test(v.trim()) ? undefined : "Enter a hostname like gitlab.example.com")
+      });
+      if (!host) {
+        return undefined;
+      }
+      host = host.trim();
+    } else {
+      email = await vscode.window.showInputBox({
+        title: "Bitbucket sign-in (1/2)",
+        prompt: "Your Atlassian account email (used with the API token)",
+        placeHolder: "you@example.com",
+        ignoreFocusOut: true,
+        validateInput: (v) => (/^[^\s@]+@[^\s@]+$/.test(v.trim()) ? undefined : "Enter your Atlassian account email")
+      });
+      if (!email) {
+        return undefined;
+      }
+      email = email.trim();
+    }
+    const tokenHelp =
+      provider === "gitlab"
+        ? `Create a personal access token with the "api" scope at https://${host}/-/user_settings/personal_access_tokens`
+        : "Create an API token with Bitbucket repository read, write and admin scopes plus account read at id.atlassian.com → Security → API tokens";
+    const token = await vscode.window.showInputBox({
+      title: provider === "gitlab" ? "GitLab access token" : "Bitbucket sign-in (2/2)",
+      prompt: tokenHelp,
+      password: true,
+      ignoreFocusOut: true
+    });
+    if (!token) {
+      return undefined;
+    }
+    const result = await run(() =>
+      vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Signing in to ${providerLabel(provider)}…` }, () =>
+        client.login(provider as "gitlab" | "bitbucket", token.trim(), { host: provider === "gitlab" ? host : undefined, email })
+      )
+    );
+    if (!result) {
+      return undefined;
+    }
+    void vscode.window.showInformationMessage(`Signed in to ${providerLabel(provider)} as @${result.login}. The token is stored in your OS keychain.`);
+    if (switchAfter) {
+      await switchAccount(result.id);
+    }
+    return result.id;
   }
 
   function openGhLogin(): void {
@@ -369,6 +450,14 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   async function initialize(): Promise<void> {
+    const provider = await pickProvider("Get started");
+    if (!provider) {
+      return;
+    }
+    if (provider !== "github") {
+      await addAccount(provider, true);
+      return;
+    }
     const ok = await run(() =>
       vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Connecting to GitHub…" }, () => client.init())
     );
@@ -437,7 +526,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.setStatusBarMessage("$(copy) Path copied", 2000);
         return;
       case "switchAccount":
-        await switchAccount(a.login);
+        await switchAccount(a.id);
         return;
       case "switchAccountMenu":
         await switchAccount();
@@ -467,7 +556,7 @@ export function activate(context: vscode.ExtensionContext): void {
         });
         return;
       case "addAccount":
-        openGhLogin();
+        await addAccount();
         return;
       case "changePassphrase":
         await changePassphrase();
@@ -501,6 +590,7 @@ export function activate(context: vscode.ExtensionContext): void {
   reg(C.lock, () => handleSidebar({ type: "lock" }));
   reg(C.changePassphrase, changePassphrase);
   reg(C.switchAccount, () => switchAccount());
+  reg(C.addAccount, () => addAccount());
   reg(C.openNote, async (arg?: string | vscode.Uri) => {
     const path = typeof arg === "string" ? arg : arg instanceof vscode.Uri ? notePathFromUri(arg) : await pickNote("Open page");
     if (path) {
@@ -558,7 +648,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const st = await run(() => client.vault());
     if (st) {
       void vscode.window.showInformationMessage(
-        `@${st.account} → ${st.repo} · ${st.encrypted ? (st.unlocked ? "encrypted, unlocked" : "encrypted, locked") : "NOT encrypted"} · key in ${st.keystore}`
+        `@${st.account} on ${providerLabel(st.provider)} → ${st.repo} · ${st.encrypted ? (st.unlocked ? "encrypted, unlocked" : "encrypted, locked") : "NOT encrypted"} · key in ${st.keystore}`
       );
     }
   });

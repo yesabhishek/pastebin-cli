@@ -31,6 +31,8 @@ export interface TrackedFile {
 }
 
 export interface StatusReport {
+  provider?: string;
+  account?: string;
   login: string;
   repo: string;
   unlocked?: boolean;
@@ -75,6 +77,8 @@ export interface ShownVersion {
 }
 
 export interface Account {
+  id: string;
+  provider: string;
   login: string;
   host: string;
   active: boolean;
@@ -83,11 +87,14 @@ export interface Account {
 
 export interface AccountView {
   current: string;
+  provider: string;
   repo: string;
   accounts: Account[];
 }
 
 export interface VaultStatus {
+  provider: string;
+  id: string;
   account: string;
   repo: string;
   encrypted: boolean;
@@ -96,6 +103,15 @@ export interface VaultStatus {
   keystore: string;
   needs: "" | "unlock" | "encrypt";
 }
+
+export interface LoginResult {
+  id: string;
+  provider: string;
+  host: string;
+  login: string;
+}
+
+const ACCOUNT_ID = /^(github|gitlab|bitbucket):[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 export type PBRunner = (args: string[], stdin?: string) => Promise<string>;
 
@@ -158,14 +174,33 @@ export class PBClient {
 
   async accounts(): Promise<AccountView> {
     const view = await this.runJSON<AccountView>(["account"]);
-    return { current: view.current ?? "", repo: view.repo ?? "", accounts: view.accounts ?? [] };
+    return { current: view.current ?? "", provider: view.provider ?? "", repo: view.repo ?? "", accounts: view.accounts ?? [] };
   }
 
-  async switchAccount(login: string): Promise<VaultStatus> {
-    if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(login)) {
-      throw new PBError("command-failed", `Invalid GitHub login: ${login}`);
+  /** Switch to an account id such as "github:alice", "gitlab:bob" or "bitbucket:carol". */
+  async switchAccount(id: string): Promise<VaultStatus> {
+    if (!ACCOUNT_ID.test(id)) {
+      throw new PBError("command-failed", `Invalid account: ${id}`);
     }
-    return await this.runJSON<VaultStatus>(["account", "switch", login]);
+    return await this.runJSON<VaultStatus>(["account", "switch", id]);
+  }
+
+  /** Store a GitLab or Bitbucket token (sent on stdin) and return the account. */
+  async login(provider: "gitlab" | "bitbucket", token: string, options: { host?: string; email?: string } = {}): Promise<LoginResult> {
+    const args = ["login", provider, "--stdin"];
+    if (options.host) {
+      if (!/^[A-Za-z0-9.-]+(:[0-9]{1,5})?$/.test(options.host)) {
+        throw new PBError("command-failed", `Invalid host: ${options.host}`);
+      }
+      args.push("--host", options.host);
+    }
+    if (options.email) {
+      if (!/^[^\s@]+@[^\s@]+$/.test(options.email)) {
+        throw new PBError("command-failed", "Enter a valid email address.");
+      }
+      args.push("--email", options.email);
+    }
+    return await this.runJSON<LoginResult>(args, token + "\n");
   }
 
   async sync(): Promise<SyncResult> {
@@ -271,7 +306,7 @@ export function classifyPBError(message: string): PBError {
   if (lower.includes("unknown command: save")) {
     return new PBError("unsupported-cli", "Update pb CLI to save notes from VS Code.");
   }
-  if (lower.includes("gh auth login") || lower.includes("not authenticated")) {
+  if (lower.includes("gh auth login") || lower.includes("not authenticated") || lower.includes("pb login") || lower.includes("rejected the token")) {
     return new PBError("auth", message);
   }
   return new PBError("command-failed", message);

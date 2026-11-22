@@ -112,7 +112,7 @@ func TestLogoutRemovesLocalConfig(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(app.paths.RootDir, "config.json")); !os.IsNotExist(err) {
 		t.Fatalf("expected config file to be removed, stat err=%v", err)
 	}
-	if !strings.Contains(out.String(), "Local pb state and device keys removed") {
+	if !strings.Contains(out.String(), "Local pb state, device keys and stored tokens removed") {
 		t.Fatalf("unexpected logout output: %q", out.String())
 	}
 }

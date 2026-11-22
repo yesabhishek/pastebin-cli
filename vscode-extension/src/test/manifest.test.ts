@@ -57,7 +57,7 @@ test("marketplace metadata is publish-ready", () => {
   assert.equal(manifest.homepage, "https://github.com/yesabhishek/pastebin-cli#readme");
   assert.equal(manifest.bugs.url, "https://github.com/yesabhishek/pastebin-cli/issues");
   assert.equal(manifest.license, "SEE LICENSE IN LICENSE");
-  for (const keyword of ["pastebin", "notes", "github", "sync", "encrypted"]) {
+  for (const keyword of ["pastebin", "notes", "github", "gitlab", "bitbucket", "sync", "encrypted"]) {
     assert.ok(manifest.keywords.includes(keyword), `missing keyword ${keyword}`);
   }
 });
@@ -118,6 +118,11 @@ test("build local pb requires a trusted workspace", () => {
   const command = manifest.contributes.commands.find((item) => item.command === "pastebin.buildLocalPB") as CommandContribution & { enablement?: string };
   assert.equal(command?.title, "Build Local pb");
   assert.equal(command?.enablement, "isWorkspaceTrusted");
+});
+
+test("marketplace text never mentions Notion", () => {
+  const text = readFileSync(join(extensionRoot, "package.json"), "utf8") + readFileSync(join(extensionRoot, "README.md"), "utf8");
+  assert.ok(!/notion/i.test(text), "package.json and README must not mention Notion");
 });
 
 test("webview scripts never use innerHTML or eval", () => {

@@ -43,7 +43,7 @@ test("ready state exposes account, counts and a path allow-list", () => {
     files
   };
   const state = createReadyState(files, status, "⌥⌘P");
-  assert.deepEqual(state.account, { login: "tester", repo: "tester/pastebin-cli-store", unlocked: true });
+  assert.deepEqual(state.account, { id: "github:tester", provider: "github", login: "tester", repo: "tester/pastebin-cli-store", unlocked: true });
   assert.equal(state.total, 2);
   assert.equal(state.pending, 1);
   const paths = notePaths(state);

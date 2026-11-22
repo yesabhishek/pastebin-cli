@@ -5,18 +5,18 @@ import { buildHtml } from "./webviewHtml";
 
 export type SidebarAction =
   | { type: "open" | "history" | "delete" | "copyPath"; path: string }
-  | { type: "switchAccount"; login: string }
+  | { type: "switchAccount"; id: string }
   | { type: "newNote" | "quickNote" | "sync" | "refresh" | "init" | "unlock" | "lock" | "addAccount" | "changePassphrase" | "buildLocal" | "configurePath" | "switchAccountMenu" };
 
 const SIMPLE = new Set(["newNote", "quickNote", "sync", "refresh", "init", "unlock", "lock", "addAccount", "changePassphrase", "buildLocal", "configurePath", "switchAccountMenu"]);
 const WITH_PATH = new Set(["open", "history", "delete", "copyPath"]);
-const LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+const ACCOUNT_ID = /^(github|gitlab|bitbucket):[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
-/** The Notion-style sidebar. It owns the latest state and validates every webview message. */
+/** The Pastebin sidebar. It owns the latest state and validates every webview message. */
 export class SidebarProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private state: SidebarState;
-  private knownLogins = new Set<string>();
+  private knownIds = new Set<string>();
   private lastSync?: Date;
 
   constructor(
@@ -35,7 +35,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     const asset = (name: string) => view.webview.asWebviewUri(vscode.Uri.joinPath(media, name)).toString();
     view.webview.html = buildHtml({
       cspSource: view.webview.cspSource,
-      styles: [asset("notion.css"), asset("sidebar.css")],
+      styles: [asset("theme.css"), asset("sidebar.css")],
       scripts: [asset("sidebar.js")],
       bodyClass: "sidebar",
       body: `<div id="root"></div>`,
@@ -104,10 +104,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     try {
       view = await this.client.accounts();
     } catch (err) {
-      view = { current: this.state.account?.login ?? "", repo: "", accounts: [] };
+      view = { current: this.state.account?.id ?? "", provider: "", repo: "", accounts: [] };
       void vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
     }
-    this.knownLogins = new Set(view.accounts.map((a) => a.login));
+    this.knownIds = new Set(view.accounts.map((a) => a.id));
     void this.view?.webview.postMessage({ type: "accounts", view });
   }
 
@@ -142,11 +142,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       return;
     }
     if (type === "switchAccount") {
-      const login = msg.login;
-      if (typeof login !== "string" || !LOGIN.test(login) || !this.knownLogins.has(login)) {
+      const id = msg.id;
+      if (typeof id !== "string" || !ACCOUNT_ID.test(id) || !this.knownIds.has(id)) {
         return;
       }
-      await this.onAction({ type, login });
+      await this.onAction({ type, id });
     }
   }
 }

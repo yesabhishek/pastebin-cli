@@ -1,4 +1,4 @@
-/* Shared Notion-inspired styling for Pastebin webviews. Colours come from the
+/* Shared styling for Pastebin webviews. Colours come from the
    active VS Code theme so the UI follows light, dark and high-contrast themes. */
 :root {
   --pb-bg: var(--vscode-sideBar-background, var(--vscode-editor-background));
@@ -267,5 +267,5 @@ body.history { overflow: hidden; }
   .history-main { padding: 24px 20px; }
 }
 
-/* Notion pages show a caret, not a focus box, inside the editing surface. */
+/* Editing surfaces show a caret, not a focus box. */
 .page-title:focus-visible, .page-body:focus-visible { outline: none; }

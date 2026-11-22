@@ -1,8 +1,8 @@
 {
   "name": "pastebin-vscode",
   "displayName": "Pastebin — Encrypted Notes",
-  "description": "Notion-style, end-to-end encrypted notes for VS Code that sync through your own private GitHub repo.",
-  "version": "0.1.0",
+  "description": "End-to-end encrypted notes for VS Code that sync through a private repository you own on GitHub, GitLab or Bitbucket.",
+  "version": "0.2.0",
   "publisher": "AbhishekChoudhury",
   "license": "SEE LICENSE IN LICENSE",
   "icon": "media/icon.png",
@@ -15,16 +15,17 @@
     "url": "https://github.com/yesabhishek/pastebin-cli/issues"
   },
   "keywords": [
-    "pastebin",
     "notes",
-    "scratchpad",
-    "github",
-    "sync",
-    "clipboard",
     "encrypted",
-    "notion",
+    "pastebin",
     "quick note",
-    "markdown"
+    "markdown",
+    "sync",
+    "github",
+    "gitlab",
+    "bitbucket",
+    "privacy",
+    "scratchpad"
   ],
   "engines": {
     "vscode": "^1.90.0"
@@ -134,7 +135,7 @@
       },
       {
         "command": "pastebin.switchAccount",
-        "title": "Switch GitHub Account",
+        "title": "Switch Account",
         "category": "Pastebin",
         "icon": "$(account)"
       },
@@ -180,6 +181,12 @@
         "category": "Pastebin",
         "icon": "$(tools)",
         "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "pastebin.addAccount",
+        "title": "Add Account (GitHub, GitLab, Bitbucket)",
+        "category": "Pastebin",
+        "icon": "$(person-add)"
       }
     ],
     "menus": {

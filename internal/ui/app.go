@@ -48,6 +48,9 @@ type App struct {
 
 	secretFromStdin bool
 	stdinReader     *bufio.Reader
+
+	gitlabAPIOverride string // tests only
+	bitbucketAPI      string
 }
 
 func NewApp(in io.Reader, out, errOut io.Writer) (*App, error) {
@@ -59,17 +62,18 @@ func NewApp(in io.Reader, out, errOut io.Writer) (*App, error) {
 		return nil, err
 	}
 	app := &App{
-		in:          in,
-		out:         out,
-		errOut:      errOut,
-		paths:       paths,
-		auth:        auth.New(),
-		updater:     update.NewManager(version.Current),
-		interactive: isInteractive(in, out),
-		clipboard:   media.SystemClipboard{},
-		viewer:      media.SystemViewer{},
-		keys:        keystore.New(paths.RootDir),
-		unlocked:    map[string]*vault.Keys{},
+		in:           in,
+		out:          out,
+		errOut:       errOut,
+		paths:        paths,
+		auth:         auth.New(),
+		updater:      update.NewManager(version.Current),
+		interactive:  isInteractive(in, out),
+		clipboard:    media.SystemClipboard{},
+		viewer:       media.SystemViewer{},
+		keys:         keystore.New(paths.RootDir),
+		unlocked:     map[string]*vault.Keys{},
+		bitbucketAPI: store.DefaultBitbucketAPI,
 	}
 	app.backendFor = app.defaultBackend
 	app.remoteStore = func(cfg *model.Config) store.RemoteStore {
@@ -105,6 +109,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.printVersion()
 	case "init":
 		return a.cmdInit(ctx, opts.repoOverride, commandArgs)
+	case "login":
+		return a.cmdLogin(ctx, commandArgs)
 	case "account", "accounts", "whoami":
 		return a.cmdAccount(ctx, commandArgs)
 	case "unlock":
@@ -206,13 +212,16 @@ func parseGlobalArgs(args []string) (*globalOptions, error) {
 
 func (a *App) printHelp() {
 	fmt.Fprint(a.out, strings.TrimSpace(`
-pb is an end-to-end encrypted, GitHub-backed notes and pastebin CLI.
+pb keeps end-to-end encrypted notes in a private Git repository you own
+on GitHub, GitLab or Bitbucket.
 
 Commands:
   pb init [--no-vault] [--stdin]
+  pb login <gitlab|bitbucket> [--host <host>] [--email <email>] [--stdin]
   pb note [text...] [--title <title>] [--stdin]
   pb account
-  pb account switch <github-login>
+  pb account switch <provider:login> [--owner <group-or-workspace>]
+  pb account remove <provider:login>
   pb unlock [--stdin]
   pb lock
   pb encrypt [--stdin]
@@ -236,7 +245,7 @@ Commands:
   pb logout
 
 Global flags:
-  --repo <name>  override GitHub storage repo
+  --repo <name>  override the storage repository name
   --json         emit JSON output (read, save, note, versions, show, restore, delete, list, sync, status, account, vault)
 
 Passphrases are read from the terminal without echo, or one per line from stdin with --stdin.
@@ -280,7 +289,7 @@ func (a *App) maybeCheckForUpgrade(ctx context.Context, command string) error {
 
 func shouldSkipUpgradeCheck(command string) bool {
 	switch command {
-	case "help", "-h", "--help", "init", "version", "upgrade", "logout", "unlock", "lock", "encrypt", "passphrase", "account", "accounts", "whoami", "vault":
+	case "help", "-h", "--help", "init", "version", "upgrade", "logout", "unlock", "lock", "encrypt", "passphrase", "account", "accounts", "whoami", "vault", "login":
 		return true
 	default:
 		return false
@@ -439,7 +448,7 @@ func (a *App) cmdInit(ctx context.Context, repoOverride string, args []string) e
 	if err := a.service(cfg).Init(ctx); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.out, "Using private repo %s/%s as @%s\n", cfg.Owner, cfg.Repo, cfg.Login)
+	fmt.Fprintf(a.out, "Using private repo %s/%s on %s as %s\n", cfg.Owner, cfg.Repo, cfgHost(cfg), AccountID(cfg.Provider, cfg.Login))
 	if !withVault {
 		return nil
 	}
@@ -455,8 +464,25 @@ func (a *App) initConfig(ctx context.Context, repoOverride string) (*model.Confi
 	if err != nil {
 		return nil, err
 	}
+	if repoOverride != "" && !validRepoName(repoOverride) {
+		return nil, errs.Wrap(errs.CodeUsage, "invalid repo name: use letters, digits, '.', '-' or '_'", nil)
+	}
+	// GitLab / Bitbucket: keep the account chosen with `pb account switch`.
+	if cfg != nil && providerName(cfg.Provider) != model.ProviderGitHub && cfg.Owner != "" {
+		if repoOverride != "" {
+			cfg.Repo = repoOverride
+		}
+		if err := config.Save(a.paths, cfg); err != nil {
+			return nil, err
+		}
+		a.paths = a.scopePaths(cfg)
+		if err := config.EnsureLayout(a.paths); err != nil {
+			return nil, err
+		}
+		return cfg, nil
+	}
 	login := ""
-	if cfg != nil && auth.ValidLogin(cfg.Login) {
+	if cfg != nil && providerName(cfg.Provider) == model.ProviderGitHub && auth.ValidLogin(cfg.Login) {
 		// Keep the account the user picked with `pb account switch`.
 		if _, err := a.auth.Token(ctx, cfg.Login); err == nil {
 			login = cfg.Login
@@ -470,9 +496,6 @@ func (a *App) initConfig(ctx context.Context, repoOverride string) (*model.Confi
 		login = info.Login
 	}
 	info := &auth.Info{Login: login}
-	if repoOverride != "" && !validRepoName(repoOverride) {
-		return nil, errs.Wrap(errs.CodeUsage, "invalid repo name: use letters, digits, '.', '-' or '_'", nil)
-	}
 	if cfg == nil {
 		deviceID, err := config.NewDeviceID()
 		if err != nil {
@@ -489,6 +512,8 @@ func (a *App) initConfig(ctx context.Context, repoOverride string) (*model.Confi
 	if repoOverride != "" {
 		cfg.Repo = repoOverride
 	}
+	cfg.Provider = model.ProviderGitHub
+	cfg.Host = ""
 	cfg.Owner = info.Login
 	cfg.Login = info.Login
 	if cfg.DeviceID == "" {
@@ -503,7 +528,7 @@ func (a *App) initConfig(ctx context.Context, repoOverride string) (*model.Confi
 	if err := config.Save(a.paths, cfg); err != nil {
 		return nil, err
 	}
-	a.paths = a.paths.Scope(cfg.Owner, cfg.Repo)
+	a.paths = a.scopePaths(cfg)
 	if err := config.EnsureLayout(a.paths); err != nil {
 		return nil, err
 	}
@@ -519,10 +544,13 @@ func (a *App) loadConfig() (*model.Config, error) {
 		return nil, errs.Wrap(errs.CodeUsage, "run `pb init` first", nil)
 	}
 
-	if !auth.ValidLogin(cfg.Owner) || !validRepoName(cfg.Repo) {
-		return nil, errs.Wrap(errs.CodeLocalCorruption, "pb config has an invalid owner or repo; run `pb init`", nil)
+	if cfg.Owner == "" {
+		return nil, errs.Wrap(errs.CodeUsage, "run `pb init` first (or `pb account switch <provider:login>`)", nil)
 	}
-	a.paths = a.paths.Scope(cfg.Owner, cfg.Repo)
+	if providerName(cfg.Provider) == "" || !validOwner(cfg.Provider, cfg.Owner) || !validRepoName(cfg.Repo) || (cfg.Host != "" && !validHost(cfg.Host)) {
+		return nil, errs.Wrap(errs.CodeLocalCorruption, "pb config has an invalid provider, owner or repo; run `pb init`", nil)
+	}
+	a.paths = a.scopePaths(cfg)
 	if err := config.EnsureLayout(a.paths); err != nil {
 		return nil, err
 	}
@@ -1033,6 +1061,8 @@ func (a *App) status(ctx context.Context, jsonOut bool) error {
 	if _, err := a.cachedKeys(cfg); err == nil {
 		report.Unlocked = true
 	}
+	report.Provider = providerName(cfg.Provider)
+	report.Account = AccountID(cfg.Provider, cfg.Login)
 	if jsonOut {
 		return writeJSON(a.out, report)
 	}
@@ -1040,17 +1070,20 @@ func (a *App) status(ctx context.Context, jsonOut bool) error {
 	if report.Unlocked {
 		lock = "unlocked"
 	}
-	fmt.Fprintf(a.out, "Login: %s\nRepo: %s\nVault: %s\nFiles: %d\nPending writes: %d\nPending delete: %d\nConflicts: %d\n",
-		report.Login, report.Repo, lock, report.TotalFiles, len(report.PendingWrites), len(report.PendingDelete), len(report.Conflicts))
+	fmt.Fprintf(a.out, "Account: %s\nRepo: %s\nVault: %s\nFiles: %d\nPending writes: %d\nPending delete: %d\nConflicts: %d\n",
+		report.Account, report.Repo, lock, report.TotalFiles, len(report.PendingWrites), len(report.PendingDelete), len(report.Conflicts))
 	return nil
 }
 
 func (a *App) logout() error {
 	a.forgetAllKeys()
+	if cfg, err := config.Load(a.paths); err == nil {
+		a.forgetCredentials(cfg)
+	}
 	if err := os.RemoveAll(a.paths.RootDir); err != nil && !os.IsNotExist(err) {
 		return errs.Wrap(errs.CodeLocalCorruption, "remove local pb state", err)
 	}
-	fmt.Fprintln(a.out, "Local pb state and device keys removed. GitHub CLI auth and your encrypted repo are unchanged.")
+	fmt.Fprintln(a.out, "Local pb state, device keys and stored tokens removed. GitHub CLI auth and your encrypted repos are unchanged.")
 	return nil
 }
 

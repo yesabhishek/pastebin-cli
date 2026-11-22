@@ -21,15 +21,33 @@ const (
 	PendingConflict = "conflict"
 )
 
+// Storage providers.
+const (
+	ProviderGitHub    = "github"
+	ProviderGitLab    = "gitlab"
+	ProviderBitbucket = "bitbucket"
+)
+
+// LoginRef records an account pb has credentials for. The secret itself is
+// kept in the OS keychain, never in config.json.
+type LoginRef struct {
+	Provider string `json:"provider"`
+	Host     string `json:"host,omitempty"`
+	Login    string `json:"login"`
+}
+
 type Config struct {
-	Version          int       `json:"version"`
-	Owner            string    `json:"owner"`
-	Repo             string    `json:"repo"`
-	Login            string    `json:"login"`
-	DeviceID         string    `json:"device_id"`
-	UpgradePolicy    string    `json:"upgrade_policy,omitempty"`
-	IgnoredRelease   string    `json:"ignored_release,omitempty"`
-	LastReleaseCheck time.Time `json:"last_release_check,omitempty"`
+	Version          int        `json:"version"`
+	Provider         string     `json:"provider,omitempty"`
+	Host             string     `json:"host,omitempty"`
+	Owner            string     `json:"owner"`
+	Repo             string     `json:"repo"`
+	Login            string     `json:"login"`
+	Logins           []LoginRef `json:"logins,omitempty"`
+	DeviceID         string     `json:"device_id"`
+	UpgradePolicy    string     `json:"upgrade_policy,omitempty"`
+	IgnoredRelease   string     `json:"ignored_release,omitempty"`
+	LastReleaseCheck time.Time  `json:"last_release_check,omitempty"`
 }
 
 type TrackedFile struct {
@@ -105,6 +123,8 @@ type SyncResult struct {
 }
 
 type StatusReport struct {
+	Provider      string         `json:"provider"`
+	Account       string         `json:"account"`
 	Login         string         `json:"login"`
 	Repo          string         `json:"repo"`
 	Unlocked      bool           `json:"unlocked"`

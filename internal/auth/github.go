@@ -19,10 +19,12 @@ type Info struct {
 
 // Account is one GitHub account known to the GitHub CLI.
 type Account struct {
-	Login  string `json:"login"`
-	Host   string `json:"host"`
-	Active bool   `json:"active"`
-	OK     bool   `json:"ok"`
+	ID       string `json:"id"`
+	Provider string `json:"provider"`
+	Login    string `json:"login"`
+	Host     string `json:"host"`
+	Active   bool   `json:"active"`
+	OK       bool   `json:"ok"`
 }
 
 var loginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
@@ -79,10 +81,12 @@ func (g *GitHubAuth) Accounts(ctx context.Context) ([]Account, error) {
 			continue
 		}
 		accounts = append(accounts, Account{
-			Login:  entry.Login,
-			Host:   Host,
-			Active: entry.Active,
-			OK:     entry.State == "success",
+			ID:       "github:" + entry.Login,
+			Provider: "github",
+			Login:    entry.Login,
+			Host:     Host,
+			Active:   entry.Active,
+			OK:       entry.State == "success",
 		})
 	}
 	if len(accounts) == 0 {

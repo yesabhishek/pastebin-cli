@@ -1,39 +1,48 @@
-# Pastebin — Encrypted Notes for VS Code
+# Pastebin — Encrypted Notes
 
-A Notion-style notes sidebar for VS Code. Notes are **end-to-end encrypted on your machine** and synced through a private repo in **your own GitHub account**. There is no server and no subscription, and nobody else can read them.
+Private notes inside VS Code. Every note is **end-to-end encrypted on your machine** and synced through a private repository **you own on GitHub, GitLab or Bitbucket**. There is no server and no subscription, and nobody else can read your notes, including your Git host.
 
-![Notion-style sidebar and quick note](https://raw.githubusercontent.com/yesabhishek/pastebin-cli/main/docs/screenshots/quick-note-dark.png)
+![The notes sidebar next to the quick-note page](https://raw.githubusercontent.com/yesabhishek/pastebin-cli/main/docs/screenshots/quick-note-dark.png)
 
 ## Highlights
 
-- **Notion-style sidebar:** workspace header, search, recent pages, a nested page tree, and hover actions.
-- **Quick note** with <kbd>⌥⌘P</kbd> / <kbd>Ctrl+Alt+P</kbd> from anywhere in VS Code. Type a title and some text, then press <kbd>⌘↵</kbd>. It's encrypted, saved and synced.
-- **Native editing:** pages open as regular editor tabs (Markdown, multi-cursor, everything). <kbd>⌘S</kbd> syncs.
-- **Version history:** browse decrypted past versions side by side and restore with one click (<kbd>⌥⌘H</kbd>).
-- **See and switch your GitHub account:** click your name in the sidebar or the `🔒 @login` status-bar item.
-- **Encrypted with AES-256-GCM**, with the key derived using Argon2id from your passphrase. Note names are encrypted too.
-- **Unlock once per device.** The key is kept in your OS keychain.
+- **Clean, focused sidebar** with search, recent pages, folders and sync status.
+- **Quick note from anywhere** with <kbd>⌥⌘P</kbd> / <kbd>Ctrl+Alt+P</kbd>. Type a title and some text, press <kbd>⌘↵</kbd>, and it is encrypted, saved and synced.
+- **Native editing.** Pages open as regular editor tabs with Markdown and all your editor features. <kbd>⌘S</kbd> syncs.
+- **Version history.** Browse decrypted past versions side by side and restore with one click (<kbd>⌥⌘H</kbd>).
+- **Your choice of Git host.** GitHub, GitLab (gitlab.com or self-managed) and Bitbucket Cloud.
+- **Several accounts.** See which account you sync to and switch at any time.
+- **Strong encryption.** AES-256-GCM, with the key protected by your passphrase through Argon2id. Note names are encrypted too.
+- **Unlock once per device.** The key and your host tokens are kept in the OS keychain.
 
-| Version history | Account switcher |
+| Version history | Accounts |
 |---|---|
 | ![Version history](https://raw.githubusercontent.com/yesabhishek/pastebin-cli/main/docs/screenshots/history-light.png) | ![Account switcher](https://raw.githubusercontent.com/yesabhishek/pastebin-cli/main/docs/screenshots/account-switcher-light.png) |
 
 ## Requirements
 
-1. [GitHub CLI](https://cli.github.com/), signed in with `gh auth login`.
-2. The [`pb` CLI](https://github.com/yesabhishek/pastebin-cli#install) v0.3 or newer:
+- The [`pb` CLI](https://github.com/yesabhishek/pastebin-cli#install), version 0.4 or newer:
 
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/yesabhishek/pastebin-cli/main/scripts/install.sh | sh
-   ```
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/yesabhishek/pastebin-cli/main/scripts/install.sh | sh
+  ```
+
+- An account on one of the supported hosts:
+
+  | Host | What you need |
+  |---|---|
+  | GitHub | The [GitHub CLI](https://cli.github.com/), signed in with `gh auth login` |
+  | GitLab | A personal access token with the `api` scope |
+  | Bitbucket Cloud | Your Atlassian account email and an API token with repository read, write and admin scopes plus account read |
 
 ## Getting started
 
 1. Open the **Pastebin** view in the activity bar and click **Get started**.
-2. Pick a passphrase. It encrypts your notes, and you'll enter it once on each new device. **There is no recovery if you forget it.**
-3. Press <kbd>⌥⌘P</kbd> and write your first note.
+2. Choose GitHub, GitLab or Bitbucket and sign in. pb creates a **private** repository for your notes.
+3. Pick a passphrase. It encrypts your notes, and you enter it once on each new device. **There is no recovery if you forget it.**
+4. Press <kbd>⌥⌘P</kbd> and write your first note.
 
-Already using pb on another machine? **Get started** detects your existing vault and asks for the passphrase instead.
+Already using pb on another machine? Sign in to the same account and enter your existing passphrase when asked.
 
 ## Commands
 
@@ -44,21 +53,24 @@ Already using pb on another machine? **Get started** detects your existing vault
 | Pastebin: Version History | <kbd>⌥⌘H</kbd> / <kbd>Ctrl+Alt+H</kbd> (on a page) |
 | Pastebin: New Page | |
 | Pastebin: Sync | |
-| Pastebin: Switch GitHub Account | |
+| Pastebin: Switch Account | |
+| Pastebin: Add Account (GitHub, GitLab, Bitbucket) | |
 | Pastebin: Unlock Vault / Lock Vault on This Device | |
 | Pastebin: Change Vault Passphrase | |
 | Pastebin: Save Current Editor to Pastebin | |
 
 ## Settings
 
-- `pastebin.pbPath`: path to the `pb` binary (user setting only. Workspaces can't override it).
+- `pastebin.pbPath`: path to the `pb` binary. Only read from user settings, so a workspace cannot override it.
 - `pastebin.syncOnStartup`: sync in the background when VS Code starts (default on).
 - `pastebin.autoSync`: sync every 10 minutes while VS Code is focused (default on).
 
-## Privacy & security
+## Privacy and security
 
-- The extension never sees your GitHub token. pb fetches it from the GitHub CLI for the account you selected.
-- Passphrases go to `pb` over stdin only, never as command-line arguments, and are never stored by the extension.
+- Your Git host only stores ciphertext. Note names and the index are encrypted as well.
+- Passphrases and tokens go to `pb` over stdin only, never as command-line arguments, and the extension never stores them.
+- GitLab and Bitbucket tokens are verified, then kept in your OS keychain.
+- pb refuses to use a repository that is not private.
 - Webviews run under a strict Content-Security-Policy: no remote content, and no HTML built from note data.
 - In untrusted workspaces, building pb from source is disabled.
 
@@ -67,7 +79,8 @@ Already using pb on another machine? **Get started** detects your existing vault
 - **"Install the pb CLI"**: install pb, or set `pastebin.pbPath` to its full path.
 - **"Update the pb CLI"**: run `pb upgrade`.
 - **"Vault locked on this device"**: click **Unlock** and enter your passphrase.
-- **Wrong account?** Click your name at the top of the sidebar and pick another one, or choose **Add GitHub account…**.
+- **Token rejected**: run **Pastebin: Add Account** again with a new token that has the scopes listed above.
+- **Wrong account?** Click your name at the top of the sidebar and pick another one.
 
 ## Development
 
