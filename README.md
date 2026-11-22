@@ -9,6 +9,10 @@
   Everything is <b>end-to-end encrypted on your machine</b> before it is uploaded to a private GitHub repo you own.
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/quick-note-dark.png" alt="Pastebin in VS Code: Notion-style sidebar and the quick-note page" width="860">
+</p>
+
 ---
 
 ## Why pb
@@ -76,6 +80,17 @@ This sets a passphrase, encrypts every existing note, and deletes the plaintext 
 > **Git history:** encryption can't rewrite history you already pushed, so old plaintext versions remain in that repo's commit history. To get rid of them, start a fresh repo with `pb --repo pastebin-vault init`, then delete the old repo on GitHub.
 
 ## VS Code extension
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/history-light.png" alt="Version history with decrypted preview and restore"><br><sub><b>Version history</b>: browse decrypted past versions and restore with one click</sub></td>
+    <td width="50%"><img src="docs/screenshots/account-switcher-light.png" alt="Account switcher menu in the sidebar"><br><sub><b>Account switcher</b>: see which GitHub account you sync to and switch any time</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/quick-note-dark.png" alt="Quick note page in the dark theme"><br><sub><b>Quick note</b> (<kbd>⌥⌘P</kbd>): type, press <kbd>⌘↵</kbd>, and it's encrypted and synced</sub></td>
+    <td width="50%"><img src="docs/screenshots/locked-vault-dark.png" alt="Locked vault banner on a new device"><br><sub><b>New device?</b> Unlock once with your passphrase and everything syncs</sub></td>
+  </tr>
+</table>
 
 | | |
 |---|---|

@@ -2,6 +2,8 @@
 
 A Notion-style notes sidebar for VS Code. Notes are **end-to-end encrypted on your machine** and synced through a private repo in **your own GitHub account**. There is no server and no subscription, and nobody else can read them.
 
+![Notion-style sidebar and quick note](https://raw.githubusercontent.com/yesabhishek/pastebin-cli/main/docs/screenshots/quick-note-dark.png)
+
 ## Highlights
 
 - **Notion-style sidebar:** workspace header, search, recent pages, a nested page tree, and hover actions.
@@ -11,6 +13,10 @@ A Notion-style notes sidebar for VS Code. Notes are **end-to-end encrypted on yo
 - **See and switch your GitHub account:** click your name in the sidebar or the `🔒 @login` status-bar item.
 - **Encrypted with AES-256-GCM**, with the key derived using Argon2id from your passphrase. Note names are encrypted too.
 - **Unlock once per device.** The key is kept in your OS keychain.
+
+| Version history | Account switcher |
+|---|---|
+| ![Version history](https://raw.githubusercontent.com/yesabhishek/pastebin-cli/main/docs/screenshots/history-light.png) | ![Account switcher](https://raw.githubusercontent.com/yesabhishek/pastebin-cli/main/docs/screenshots/account-switcher-light.png) |
 
 ## Requirements
 
