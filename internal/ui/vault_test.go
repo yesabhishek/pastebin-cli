@@ -18,8 +18,11 @@ import (
 func newDeviceApp(t *testing.T, backend store.Backend, device string) (*App, *keystore.Memory) {
 	t.Helper()
 	home := t.TempDir()
+	// Each simulated device needs its own config dir on every OS
+	// (os.UserConfigDir uses XDG_CONFIG_HOME, HOME, or APPDATA on Windows).
 	t.Setenv("XDG_CONFIG_HOME", home)
 	t.Setenv("HOME", home)
+	t.Setenv("APPDATA", home)
 	app, err := NewApp(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
